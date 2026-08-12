@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+# Build rules for linuxmuster-verwaltung-fileserver.
+#
+# Architecture-independent package consisting of scripts and configuration
+# templates only, so the default debhelper sequence is sufficient. Install
+# locations are declared in debian/install.
+
+%:
+	dh $@
+
+# The Makefile in the source root only wraps dpkg-buildpackage, it does not
+# build anything. Keep debhelper from auto-detecting and invoking it.
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+
+override_dh_auto_clean:

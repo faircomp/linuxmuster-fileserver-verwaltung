@@ -1,0 +1,12 @@
+linuxmuster-fileserver-verwaltung (7.3.0-0) lmn73; urgency=low
+
+  * Initial release, derived from linuxmuster-fileserver (Netzint GmbH)
+  * Target platform: Ubuntu 24.04 LTS, linuxmuster.net 7.3
+  * Provide a single "Verwaltung" share whose access control is managed
+    entirely through Windows (NT ACLs in extended attributes)
+  * Do not create any sophomorix-managed directory structure, so the data
+    on this server is never rewritten by sophomorix-repair
+  * Replace the "ntp" dependency of the upstream package, which is not
+    available in Ubuntu 24.04, with "chrony | ntpsec | systemd-timesyncd"
+
+ -- Kevin Stenzel <mail@kevin-stenzel.de>  Wed, 12 Aug 2026 12:00:00 +0200

@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+
+#########################################################################
+#
+# linuxmuster-fileserver-verwaltung
+#
+# Sets up a dedicated administration ("Verwaltung") fileserver for a
+# linuxmuster.net 7.3 installation: joins the Samba Active Directory as a
+# domain member and publishes a single share whose access control is
+# managed from Windows.
+#
+# Derived from linuxmuster-fileserver by Netzint GmbH (Lukas Spitznagel).
+#
+#########################################################################
+
+import argparse
+import os
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+
+from getpass import getpass
+
+TEMPLATE_DIR = "/var/lib/linuxmuster-fileserver-verwaltung"
+
+# Well-known SID of NT AUTHORITY\SYSTEM. Used literally so that seeding the
+# ACL does not depend on the display language of the domain controller.
+SID_SYSTEM = "S-1-5-18"
+
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+RESET = "\033[0m"
+
+BANNER = r"""
+=======================================================================
+  linuxmuster.net  .  Verwaltungs-Fileserver
+
+  Dedizierter Fileserver fuer die Schulverwaltung.
+  Rechte werden unter Windows vergeben, nicht von sophomorix.
+=======================================================================
+"""
+
+
+class SetupError(Exception):
+    """Raised when a step fails in a way that must abort the run."""
+
+
+# ---------------------------------------------------------------------------
+# process helpers
+# ---------------------------------------------------------------------------
+
+
+def run(command, check=False):
+    """Execute a command and return the CompletedProcess."""
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and result.returncode != 0:
+        raise SetupError(
+            "Befehl fehlgeschlagen: %s\n%s" % (" ".join(command), out(result))
+        )
+    return result
+
+
+def out(result):
+    """Return the combined output of a CompletedProcess as text."""
+    return (result.stdout + result.stderr).decode(errors="replace").strip()
+
+
+def step(message):
+    print("%-60s" % (message + " ..."), end="", flush=True)
+
+
+def good(detail=""):
+    print(GREEN + "OK" + RESET + (" " + detail if detail else ""))
+
+
+def warn(detail=""):
+    print(YELLOW + "WARNUNG" + RESET + (" " + detail if detail else ""))
+
+
+def bad(detail=""):
+    print(RED + "FEHLER" + RESET + (" " + detail if detail else ""))
+
+
+class AuthFile:
+    """
+    A short-lived credentials file for the Samba tools.
+
+    Passing "-U user%password" would expose the password in the process list
+    of every user on the machine for as long as the command runs, so all
+    Samba calls that need credentials read them from this file instead.
+    """
+
+    def __init__(self, username, password, workgroup):
+        self.username = username
+        self.password = password
+        self.workgroup = workgroup
+        self.path = None
+
+    def __enter__(self):
+        handle, self.path = tempfile.mkstemp(prefix="lmn-verwaltung-", dir="/run")
+        os.fchmod(handle, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(handle, "w") as credentials:
+            credentials.write(
+                "username=%s\npassword=%s\ndomain=%s\n"
+                % (self.username, self.password, self.workgroup)
+            )
+        return self
+
+    def __exit__(self, *_):
+        if self.path and os.path.exists(self.path):
+            os.unlink(self.path)
+        return False
+
+    @property
+    def args(self):
+        return ["-A", self.path]
+
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+
+
+def check_root():
+    if os.geteuid() != 0:
+        sys.exit("Dieses Programm muss als root laufen.")
+
+
+def check_hostname():
+    """
+    The NetBIOS name is limited to 15 characters and the domain join derives
+    it from the hostname, so an over-long name breaks the join in a way that
+    is tedious to diagnose afterwards.
+    """
+    hostname = socket.gethostname()
+    if "." in hostname:
+        raise SetupError(
+            "Der Hostname '%s' enthaelt einen Punkt. Bitte einen kurzen "
+            "Hostnamen setzen, z.B.:\n  hostnamectl set-hostname verwaltung01"
+            % hostname
+        )
+    if len(hostname) > 15:
+        raise SetupError(
+            "Der Hostname '%s' ist %d Zeichen lang, NetBIOS erlaubt hoechstens 15."
+            % (hostname, len(hostname))
+        )
+    return hostname
+
+
+DNS_HINT = (
+    "Dieser Server muss den AD-Domaenencontroller (den linuxmuster-Server) als\n"
+    "DNS-Server verwenden - nicht die Firewall. Nur der DC beantwortet die\n"
+    "_ldap._tcp-SRV-Eintraege, ohne die kein Domaenenbeitritt moeglich ist.\n"
+    "Die offizielle Doku nennt an dieser Stelle faelschlich die OPNsense-Adresse;\n"
+    "das ist die haeufigste Ursache fuer einen fehlgeschlagenen Join."
+)
+
+
+def check_dns(domain):
+    try:
+        socket.getaddrinfo(domain, None)
+    except socket.gaierror as error:
+        raise SetupError(
+            "Die Domaene '%s' laesst sich nicht aufloesen (%s).\n\n%s"
+            % (domain, error, DNS_HINT)
+        )
+
+
+def check_domain_controller():
+    """
+    Locate a domain controller the way the join will.
+
+    Resolving the domain name alone is not enough: the join needs the SRV
+    records that only the AD DNS serves, so probe for a DC directly.
+    """
+    result = run(["/usr/bin/net", "ads", "lookup"])
+    if result.returncode != 0 or "Domain Controller" not in out(result):
+        raise SetupError(
+            "Es wurde kein Domaenencontroller gefunden.\n\n%s\n\nAusgabe:\n%s"
+            % (DNS_HINT, out(result))
+        )
+
+
+def check_time_sync():
+    result = run(["/usr/bin/timedatectl", "show", "-p", "NTPSynchronized", "--value"])
+    return out(result) == "yes"
+
+
+def check_xattr_support(path):
+    """
+    NT ACLs live in the security.NTACL extended attribute. Without xattr
+    support the whole permission model silently degrades to mode bits, so
+    this is checked before anything is written.
+    """
+    probe = os.path.join(path, ".lmn-xattr-probe")
+    try:
+        with open(probe, "w"):
+            pass
+        return (
+            run(["/usr/bin/setfattr", "-n", "security.lmnprobe", "-v", "1", probe]).returncode
+            == 0
+        )
+    except OSError as error:
+        raise SetupError("Kann unter %s nicht schreiben: %s" % (path, error))
+    finally:
+        if os.path.exists(probe):
+            os.unlink(probe)
+
+
+# ---------------------------------------------------------------------------
+# configuration
+# ---------------------------------------------------------------------------
+
+
+def write_template(name, target, replacements):
+    """Render a template from TEMPLATE_DIR, keeping a copy of the original."""
+    source = os.path.join(TEMPLATE_DIR, name)
+    if not os.path.exists(source):
+        raise SetupError("Vorlage %s fehlt. Ist das Paket vollstaendig?" % source)
+
+    with open(source, "r") as handle:
+        content = handle.read()
+    for placeholder, value in replacements.items():
+        content = content.replace(placeholder, value)
+
+    if os.path.exists(target) and not os.path.exists(target + ".lmn-orig"):
+        shutil.copy2(target, target + ".lmn-orig")
+
+    with open(target, "w") as handle:
+        handle.write(content)
+
+
+def configure(domain, workgroup, hostname):
+    replacements = {
+        "%%DOMAIN%%": domain,
+        "%%HOSTNAME%%": hostname.upper(),
+        "%%WORKGROUP%%": workgroup,
+    }
+
+    for template, target in (
+        ("krb5.conf.example", "/etc/krb5.conf"),
+        ("nsswitch.conf.example", "/etc/nsswitch.conf"),
+        ("user.map.example", "/etc/samba/user.map"),
+        ("smb.conf.example", "/etc/samba/smb.conf"),
+    ):
+        step("Schreibe %s" % target)
+        write_template(template, target, replacements)
+        good()
+
+    step("Pruefe die erzeugte smb.conf")
+    result = run(["/usr/bin/testparm", "-s"])
+    if result.returncode != 0:
+        raise SetupError("Die erzeugte smb.conf ist ungueltig:\n%s" % out(result))
+    good()
+
+
+def get_workgroup():
+    result = run(["/usr/bin/testparm", "-s", "--parameter-name", "workgroup"])
+    value = out(result).splitlines()[-1].strip() if result.returncode == 0 else ""
+    if not value:
+        raise SetupError(
+            "Die Arbeitsgruppe laesst sich nicht aus /etc/samba/smb.conf lesen. "
+            "Wurde 'setup' schon ausgefuehrt?"
+        )
+    return value
+
+
+# ---------------------------------------------------------------------------
+# domain
+# ---------------------------------------------------------------------------
+
+
+def already_joined():
+    return "Join is OK" in out(run(["/usr/bin/net", "ads", "testjoin"]))
+
+
+def join_domain(auth):
+    step("Trete der Active Directory bei")
+    if already_joined():
+        good("(war bereits Mitglied)")
+    else:
+        result = run(["/usr/bin/net", "ads", "join"] + auth.args)
+        if not already_joined():
+            raise SetupError(
+                "Domaenenbeitritt fehlgeschlagen:\n%s\n\n"
+                "Haeufige Ursachen: das Konto '%s' hat keine Beitrittsrechte, "
+                "die Uhr weicht um mehr als 5 Minuten ab, oder der Server steht "
+                "nicht in der devices.csv." % (out(result), auth.username)
+            )
+        good()
+
+    step("Erzeuge /etc/krb5.keytab")
+    result = run(["/usr/bin/net", "ads", "keytab", "create"] + auth.args)
+    if result.returncode == 0:
+        good()
+    else:
+        warn("(%s)" % out(result).splitlines()[-1] if out(result) else "")
+
+
+def restart_services():
+    for service in ("smbd", "nmbd", "winbind"):
+        step("Starte %s" % service)
+        run(["/usr/bin/systemctl", "enable", service])
+        result = run(["/usr/bin/systemctl", "restart", service])
+        if result.returncode != 0:
+            bad()
+            raise SetupError("Dienst %s startet nicht:\n%s" % (service, out(result)))
+        good()
+
+
+def ping_dc():
+    step("Pruefe Verbindung zum Domaenencontroller")
+    result = run(["/usr/bin/wbinfo", "--ping-dc"])
+    if result.returncode != 0:
+        raise SetupError(
+            "winbind erreicht den Domaenencontroller nicht:\n%s" % out(result)
+        )
+    good()
+
+
+def resolve_group(workgroup, group):
+    """
+    Resolve an AD group through winbind and return its qualified name.
+
+    A share that references a group which does not exist locks everyone out
+    without any error message, so this is a hard failure.
+    """
+    qualified = "%s\\%s" % (workgroup, group)
+    result = run(["/usr/bin/wbinfo", "--name-to-sid", qualified])
+    if result.returncode != 0:
+        raise SetupError(
+            "Die AD-Gruppe '%s' ist nicht aufloesbar.\n"
+            "Lege sie zuerst auf dem linuxmuster-Server an und starte danach "
+            "erneut.\n%s" % (qualified, out(result))
+        )
+    return qualified
+
+
+# ---------------------------------------------------------------------------
+# share
+# ---------------------------------------------------------------------------
+
+
+def create_directory(path, workgroup):
+    step("Lege %s an" % path)
+    os.makedirs(path, exist_ok=True)
+    good()
+
+    step("Pruefe erweiterte Attribute (security-Namensraum)")
+    if not check_xattr_support(path):
+        raise SetupError(
+            "Das Dateisystem unter %s speichert keine erweiterten Attribute.\n"
+            "Ohne security.NTACL koennen die Windows-Rechte nicht abgelegt "
+            "werden. Bei ext4 'user_xattr' pruefen, bei ZFS 'xattr=sa' und "
+            "'acltype=posixacl' setzen." % path
+        )
+    good()
+
+    # The share is served with "acl_xattr:ignore system acls = yes", so the
+    # POSIX layer inside the share is deliberately not authoritative. The
+    # share root is the one exception: the kernel still enforces its mode on
+    # traversal. Restricting it to Domain Users keeps every non-AD account
+    # out, while the NT ACL does the actual per-folder filtering.
+    step("Setze Basisrechte auf %s" % path)
+    domain_users = "%s\\domain users" % workgroup
+    result = run(["/usr/bin/chown", "root:%s" % domain_users, path])
+    if result.returncode != 0:
+        raise SetupError(
+            "Kann den Besitzer von %s nicht auf '%s' setzen:\n%s"
+            % (path, domain_users, out(result))
+        )
+    os.chmod(path, 0o0770)
+    good()
+
+
+def configure_share(share, path, groups, admin_user):
+    step("Konfiguriere Freigabe [%s]" % share)
+    run(["/usr/bin/net", "conf", "addshare", share, path])
+
+    valid_users = list(groups)
+    if admin_user:
+        valid_users.append(admin_user)
+
+    parameters = [
+        ("comment", "Verwaltung"),
+        ("path", path),
+        ("read only", "no"),
+        ("browseable", "yes"),
+        # Access-based enumeration: users only see what their NT ACL grants.
+        ("hide unreadable", "yes"),
+        ("access based share enum", "yes"),
+        # A second gate in front of the NT ACL. Share-level and NT-level
+        # permissions are independent; the more restrictive one wins.
+        ("valid users", ", ".join("@" + g for g in groups) if groups else ""),
+        # Listing acl_xattr here is required: a share-level "vfs objects"
+        # replaces the global value rather than adding to it.
+        ("vfs objects", "acl_xattr"),
+        # Only the NT ACL decides access. Without this, Samba keeps a
+        # best-effort POSIX ACL in sync, stores a hash of it in the NTACL
+        # blob, and silently discards the Windows permissions whenever that
+        # hash stops matching - after a restore, a chmod or an rsync.
+        ("acl_xattr:ignore system acls", "yes"),
+        # If an object ever has no NT ACL, expose owner and SYSTEM only
+        # instead of deriving open permissions from the mode bits.
+        ("acl_xattr:default acl style", "windows"),
+    ]
+    if admin_user:
+        parameters.append(("admin users", admin_user))
+
+    for key, value in parameters:
+        if value == "":
+            continue
+        run(["/usr/bin/net", "conf", "setparm", share, key, value], check=True)
+    good()
+
+
+def seed_acl(share, workgroup, groups, auth):
+    """
+    Write a restrictive starting ACL so the share is never briefly open.
+
+    Everything after this point is meant to be done in the Windows security
+    dialog; this only establishes a sane baseline to build on.
+    """
+    step("Setze Start-ACL auf der Freigabe")
+
+    admins = "%s\\Domain Admins" % workgroup
+    entries = [
+        "REVISION:1",
+        "OWNER:%s" % admins,
+        "GROUP:%s" % admins,
+        "ACL:%s:ALLOWED/OI|CI/FULL" % SID_SYSTEM,
+        "ACL:%s:ALLOWED/OI|CI/FULL" % admins,
+    ]
+    entries += ["ACL:%s:ALLOWED/OI|CI/CHANGE" % g for g in groups]
+
+    result = run(
+        ["/usr/bin/smbcacls", "//localhost/%s" % share, "/"]
+        + auth.args
+        + ["--set", ",".join(entries)]
+    )
+    if result.returncode != 0:
+        warn("(spaeter unter Windows setzen)")
+        print("    %s" % out(result).splitlines()[-1] if out(result) else "")
+        return False
+    good()
+    return True
+
+
+def grant_disk_operator(workgroup, group, auth):
+    """
+    SeDiskOperatorPrivilege lets a group edit share permissions and ACLs from
+    the Windows Computer Management console. Members of Domain Admins inherit
+    it from BUILTIN\\Administrators, so it only matters for delegated groups -
+    and it is local to this server, not domain-wide.
+    """
+    target = "%s\\%s" % (workgroup, group)
+    step("Erteile %s das Recht SeDiskOperatorPrivilege" % target)
+    result = run(
+        ["/usr/bin/net", "rpc", "rights", "grant", target, "SeDiskOperatorPrivilege"]
+        + auth.args
+    )
+    if result.returncode != 0:
+        warn("(%s)" % (out(result).splitlines()[-1] if out(result) else "unbekannt"))
+        return False
+    good()
+    return True
+
+
+def create_folders(path, folders):
+    if not folders:
+        return
+    step("Lege %d Unterordner an" % len(folders))
+    for folder in folders:
+        # Reject traversal so a typo cannot create directories outside the share.
+        if os.path.isabs(folder) or ".." in folder.replace("\\", "/").split("/"):
+            raise SetupError("Unzulaessiger Ordnername: %s" % folder)
+        os.makedirs(os.path.join(path, folder), exist_ok=True)
+    good()
+
+
+# ---------------------------------------------------------------------------
+# subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_setup(args):
+    check_root()
+
+    domain = args.domain.upper()
+    workgroup = domain.split(".")[0]
+    hostname = check_hostname()
+    password = args.password or getpass("Passwort fuer %s@%s: " % (args.username, domain))
+
+    print()
+    step("Pruefe Namensaufloesung fuer %s" % domain)
+    check_dns(args.domain)
+    good()
+
+    step("Pruefe Zeitsynchronisation")
+    if check_time_sync():
+        good()
+    else:
+        warn("(NTP nicht synchron - Kerberos scheitert dann)")
+
+    configure(domain, workgroup, hostname)
+
+    # Only meaningful once smb.conf names the realm, so this runs after
+    # configure() and before the join it is meant to protect.
+    step("Suche einen Domaenencontroller")
+    check_domain_controller()
+    good()
+
+    with AuthFile(args.username, password, workgroup) as auth:
+        join_domain(auth)
+        restart_services()
+        ping_dc()
+
+        groups = [resolve_group(workgroup, g) for g in args.group]
+        admin_user = "%s\\administrator" % workgroup if args.admin_user else None
+
+        create_directory(args.path, workgroup)
+        configure_share(args.share, args.path, groups, admin_user)
+        create_folders(args.path, args.folder)
+
+        step("Lade Samba-Konfiguration neu")
+        run(["/usr/bin/smbcontrol", "all", "reload-config"])
+        good()
+
+        seeded = seed_acl(args.share, workgroup, groups, auth) if groups else False
+        granted = grant_disk_operator(workgroup, args.rights_group, auth)
+
+    print()
+    print(GREEN + "Setup abgeschlossen." + RESET)
+    print()
+    print("  Freigabe   \\\\%s\\%s" % (socket.getfqdn(), args.share))
+    print("  Pfad       %s" % args.path)
+    print("  Zugriff    %s" % (", ".join(groups) if groups else "(keine Gruppe gesetzt)"))
+    print()
+
+    if not groups:
+        print(
+            YELLOW
+            + "Es wurde keine Zugriffsgruppe angegeben (-g). Damit kommt ausser\n"
+            "den Domaenen-Admins niemand auf die Freigabe." + RESET
+        )
+        print()
+    if not granted:
+        print(YELLOW + "SeDiskOperatorPrivilege wurde nicht erteilt. Manuell:" + RESET)
+        print(
+            '  net rpc rights grant "%s\\%s" SeDiskOperatorPrivilege -U %s'
+            % (workgroup, args.rights_group, args.username)
+        )
+        print()
+
+    print("Naechster Schritt: an einem Windows-Client als Domaenen-Admin")
+    print("  \\\\%s\\%s  oeffnen" % (socket.getfqdn(), args.share))
+    print("  -> Eigenschaften -> Sicherheit -> Erweitert")
+    if seeded:
+        print("Eine restriktive Start-ACL ist bereits gesetzt.")
+
+
+def cmd_status(args):
+    print()
+    ok = True
+
+    for service in ("smbd", "nmbd", "winbind"):
+        step("Dienst %s" % service)
+        if out(run(["/usr/bin/systemctl", "is-active", service])) == "active":
+            good()
+        else:
+            bad()
+            ok = False
+
+    step("Domaenenmitgliedschaft")
+    if already_joined():
+        good()
+    else:
+        bad("(net ads testjoin schlaegt fehl)")
+        ok = False
+
+    step("Domaenencontroller erreichbar")
+    if run(["/usr/bin/wbinfo", "--ping-dc"]).returncode == 0:
+        good()
+    else:
+        bad()
+        ok = False
+
+    try:
+        workgroup = get_workgroup()
+    except SetupError:
+        workgroup = None
+
+    if workgroup:
+        step("Namensaufloesung (%s\\Domain Users)" % workgroup)
+        # "wbinfo -u" is useless as a probe here because the configuration
+        # deliberately turns enumeration off; resolving a known group is the
+        # check that actually means something.
+        if run(
+            ["/usr/bin/wbinfo", "--name-to-sid", "%s\\Domain Users" % workgroup]
+        ).returncode == 0:
+            good()
+        else:
+            bad()
+            ok = False
+
+    step("Freigabe [%s] konfiguriert" % args.share)
+    if args.share in out(run(["/usr/bin/net", "conf", "listshares"])).split():
+        good()
+    else:
+        bad()
+        ok = False
+
+    path = out(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
+    if path and os.path.isdir(path):
+        step("NT-ACL auf %s vorhanden" % path)
+        result = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
+        if "security.NTACL" in out(result):
+            good()
+        else:
+            warn("(noch nie unter Windows bearbeitet)")
+
+    step("Zeitsynchronisation")
+    if check_time_sync():
+        good()
+    else:
+        warn("(NTP nicht synchron)")
+
+    print()
+    if not ok:
+        sys.exit(1)
+
+
+def cmd_show(args):
+    path = out(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
+    if not path or not os.path.isdir(path):
+        sys.exit("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)
+
+    print("--- Freigabe-Definition (Registry) ---")
+    print(out(run(["/usr/bin/net", "conf", "showshare", args.share])))
+    print()
+    print("--- Freigabeberechtigungen (share_info.tdb) ---")
+    print(out(run(["/usr/bin/sharesec", args.share, "-v"])))
+    print()
+    print("--- POSIX (nur der Freigabe-Wurzel, sonst nicht massgeblich) ---")
+    print(out(run(["/usr/bin/getfacl", "-p", path])))
+    print()
+    print("--- NT-ACL ---")
+    result = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
+    print(out(result) or "(kein NT-ACL gesetzt)")
+
+
+def cmd_save_acl(args):
+    check_root()
+    password = args.password or getpass("Passwort fuer %s: " % args.username)
+    with AuthFile(args.username, password, get_workgroup()) as auth:
+        result = run(
+            ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"]
+            + auth.args
+            + ["--recurse", "--save", args.file]
+        )
+    if result.returncode != 0:
+        sys.exit(out(result))
+    os.chmod(args.file, 0o0600)
+    print("Rechte gesichert nach %s" % args.file)
+
+
+def cmd_restore_acl(args):
+    check_root()
+    if not os.path.exists(args.file):
+        sys.exit("Datei %s existiert nicht." % args.file)
+    password = args.password or getpass("Passwort fuer %s: " % args.username)
+    with AuthFile(args.username, password, get_workgroup()) as auth:
+        result = run(
+            ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"]
+            + auth.args
+            + ["--restore", args.file]
+        )
+    if result.returncode != 0:
+        sys.exit(out(result))
+    print("Rechte aus %s wiederhergestellt." % args.file)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Verwaltungs-Fileserver fuer linuxmuster.net 7.3"
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    setup_parser = subparsers.add_parser("setup", help="Server einrichten")
+    setup_parser.add_argument("-d", "--domain", default="linuxmuster.lan")
+    setup_parser.add_argument("-u", "--username", default="global-admin")
+    setup_parser.add_argument("-p", "--password", help="sonst interaktive Abfrage")
+    setup_parser.add_argument("-s", "--share", default="Verwaltung")
+    setup_parser.add_argument("--path", default="/srv/samba/verwaltung")
+    setup_parser.add_argument(
+        "-g",
+        "--group",
+        action="append",
+        default=[],
+        help="AD-Gruppe mit Zugriff auf die Freigabe (mehrfach angebbar)",
+    )
+    setup_parser.add_argument(
+        "--rights-group",
+        default="Domain Admins",
+        help="AD-Gruppe, die die Rechte unter Windows verwalten darf",
+    )
+    setup_parser.add_argument(
+        "--folder", action="append", default=[], help="anzulegender Unterordner"
+    )
+    setup_parser.add_argument(
+        "--admin-user",
+        action="store_true",
+        help="Domaenen-Administrator als 'admin users' eintragen. Umgeht "
+        "SAEMTLICHE Rechte auf der Freigabe - nur bewusst verwenden.",
+    )
+
+    status_parser = subparsers.add_parser("status", help="Zustand pruefen")
+    status_parser.add_argument("-s", "--share", default="Verwaltung")
+
+    show_parser = subparsers.add_parser("show", help="Freigabe und Rechte anzeigen")
+    show_parser.add_argument("-s", "--share", default="Verwaltung")
+
+    save_parser = subparsers.add_parser("save-acl", help="Rechte sichern (SDDL)")
+    save_parser.add_argument("-s", "--share", default="Verwaltung")
+    save_parser.add_argument("-u", "--username", default="global-admin")
+    save_parser.add_argument("-p", "--password")
+    save_parser.add_argument("-f", "--file", default="/root/verwaltung-acl.sddl")
+
+    restore_parser = subparsers.add_parser("restore-acl", help="Rechte zurueckspielen")
+    restore_parser.add_argument("-s", "--share", default="Verwaltung")
+    restore_parser.add_argument("-u", "--username", default="global-admin")
+    restore_parser.add_argument("-p", "--password")
+    restore_parser.add_argument("-f", "--file", default="/root/verwaltung-acl.sddl")
+
+    args = parser.parse_args()
+    print(BANNER)
+
+    handlers = {
+        "setup": cmd_setup,
+        "status": cmd_status,
+        "show": cmd_show,
+        "save-acl": cmd_save_acl,
+        "restore-acl": cmd_restore_acl,
+    }
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return
+
+    try:
+        handler(args)
+    except SetupError as error:
+        print()
+        sys.exit(RED + str(error) + RESET)
+
+
+if __name__ == "__main__":
+    main()

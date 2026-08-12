@@ -1,0 +1,16 @@
+[libdefaults]
+        default_realm = %%DOMAIN%%
+
+# The following krb5.conf variables are only for MIT Kerberos.
+
+        dns_lookup_realm = false
+        dns_lookup_kdc = true
+        kdc_timesync = 1
+        ccache_type = 4
+        forwardable = true
+        proxiable = true
+
+# Reverse DNS is a frequent source of "Server not found in Kerberos database"
+# on networks where PTR records lag behind. Do not rely on it.
+        rdns = false
+        dns_canonicalize_hostname = false

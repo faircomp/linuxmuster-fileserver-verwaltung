@@ -1,0 +1,82 @@
+# /etc/samba/smb.conf
+#
+# linuxmuster.net 7.3 - Verwaltungs-Fileserver (Active-Directory-Mitglied)
+#
+# Diese Datei wird von "linuxmuster-fileserver-verwaltung setup" aus einer
+# Vorlage erzeugt. Die urspruengliche Datei liegt als smb.conf.lmn-orig
+# daneben. Freigaben stehen bewusst NICHT hier, sondern in der Samba-Registry
+# (siehe "registry shares" weiter unten).
+
+[global]
+  netbios name = %%HOSTNAME%%
+  workgroup = %%WORKGROUP%%
+  realm = %%DOMAIN%%
+  security = ADS
+  server string = Verwaltungs-Fileserver
+
+  # Freigaben liegen in der Samba-Registry und werden mit "net conf" gepflegt.
+  # Denselben Weg nutzt linuxmuster fuer die Schul-Shares. Vorteil: die
+  # Definitionen ueberleben jedes Neuschreiben dieser Datei. Dafuer muss
+  # registry.tdb mit ins Backup.
+  registry shares = yes
+
+  # --- ID-Mapping ------------------------------------------------------
+  # sophomorix legt fuer Benutzer und Gruppen KEINE uidNumber/gidNumber im
+  # AD an (im Quellcode von sophomorix4 geprueft). Damit scheidet das
+  # "ad"-Backend mit RFC2307 aus - es wuerde jeden Benutzer ohne diese
+  # Attribute schlicht unsichtbar machen.
+  #
+  # "rid" berechnet die Unix-ID deterministisch aus der RID des Kontos
+  # (ID = RID - BASE_RID + LOW_RANGE_ID). Es braucht keinen persistenten
+  # Zustand, und jeder Server mit dieser Konfiguration kommt auf dieselben
+  # IDs - anders als das "autorid"-Backend des Standard-Fileservers, dessen
+  # Bereiche von der Reihenfolge des Erstkontakts abhaengen.
+  #
+  # Die IDs stimmen NICHT mit denen des linuxmuster-Servers ueberein. Das ist
+  # unkritisch, weil die Rechte auf diesem Server als NT-ACLs (SID-basiert)
+  # gefuehrt werden. Bereiche nach der Inbetriebnahme nie mehr aendern.
+  idmap config * : backend = tdb
+  idmap config * : range = 3000-7999
+
+  idmap config %%WORKGROUP%% : backend = rid
+  idmap config %%WORKGROUP%% : range = 10000-999999
+
+  # --- Kerberos / winbind ----------------------------------------------
+  dedicated keytab file = /etc/krb5.keytab
+  kerberos method = secrets and keytab
+  winbind refresh tickets = yes
+  winbind offline logon = no
+
+  # AD-Benutzer sollen sich an diesem Server nicht anmelden koennen. Das ist
+  # hier kein Detail: die Freigabe arbeitet mit
+  # "acl_xattr:ignore system acls = yes", die POSIX-Rechte unterhalb der
+  # Freigabe sind deshalb absichtlich wirkungslos. Ein lokaler Shell-Zugang
+  # wuerde die Windows-Rechte vollstaendig umgehen.
+  template shell = /usr/sbin/nologin
+  template homedir = /dev/null
+
+  # Fehlgeschlagene Namensaufloesung soll auffallen, statt still zu bleiben.
+  winbind enum users = no
+  winbind enum groups = no
+
+  # Bildet den Domaenen-Administrator auf root ab. Ohne diese Zuordnung
+  # scheitern "net rpc rights"-Aufrufe gern mit NT_STATUS_ACCESS_DENIED.
+  username map = /etc/samba/user.map
+
+  # --- Windows-ACLs ------------------------------------------------------
+  # Speichert den vollstaendigen NT-Security-Descriptor im erweiterten
+  # Attribut security.NTACL. Die share-spezifischen acl_xattr-Optionen
+  # stehen bei der Freigabe selbst (net conf), nicht hier.
+  vfs objects = acl_xattr
+  map acl inherit = yes
+
+  # --- Dies ist kein Druckserver -----------------------------------------
+  load printers = no
+  printing = bsd
+  printcap name = /dev/null
+  disable spoolss = yes
+
+  # --- Protokollierung ----------------------------------------------------
+  log level = 1
+  max log size = 10000
+  logging = file

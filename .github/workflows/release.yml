@@ -1,0 +1,111 @@
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+
+name: Build Release
+
+jobs:
+  deb-package:
+    name: build DEB-Package
+    # Build on the same release the package targets (lmn73 = Ubuntu 24.04 LTS)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install debhelper build-essential -y
+
+      - name: Build
+        run: make deb
+
+      - name: Copy artifacts
+        run: mkdir package && cp ../linuxmuster-fileserver-verwaltung_* ./package
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: package/*
+
+  smoke-test:
+    needs: deb-package
+    name: install smoke test
+    # Building a package that cannot be installed is the failure mode this
+    # job exists to catch; the build alone proves nothing about the result.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-package
+
+      - name: Install the package
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./linuxmuster-fileserver-verwaltung_*.deb
+
+      - name: The CLI must be on PATH and runnable
+        run: |
+          command -v linuxmuster-fileserver-verwaltung
+          linuxmuster-fileserver-verwaltung --help
+          linuxmuster-fileserver-verwaltung setup --help
+
+      - name: The templates must be installed
+        run: |
+          for template in smb.conf krb5.conf nsswitch.conf user.map; do
+            test -f "/var/lib/linuxmuster-fileserver-verwaltung/$template.example" \
+              || { echo "missing: $template.example"; exit 1; }
+          done
+
+      - name: The rendered smb.conf must be valid Samba configuration
+        run: |
+          sed -e 's/%%DOMAIN%%/LINUXMUSTER.LAN/g' \
+              -e 's/%%WORKGROUP%%/LINUXMUSTER/g' \
+              -e 's/%%HOSTNAME%%/VERWALTUNG01/g' \
+              /var/lib/linuxmuster-fileserver-verwaltung/smb.conf.example \
+              | sudo tee /etc/samba/smb.conf > /dev/null
+          sudo testparm -s
+
+  github-release:
+    needs: deb-package
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    name: GitHub Release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-package
+
+      - name: Extract current changes
+        run: cat *.changes | sed '0,/^Changes:$/d' | sed '/Checksums.*/Q' | sed '1,2d' >> ./current-changes
+
+      - name: Define distribution variables
+        run: |
+          export DISTRIBUTION=$(grep -i ^Distribution *.changes | awk -F\: '{ print $2 }' | awk '{ print $1 }')
+          echo "DISTRIBUTION=$DISTRIBUTION" >> $GITHUB_ENV
+
+          export VERSION=$(grep -i ^Version *.changes | awk -F\: '{ print $2 }' | awk '{ print $1 }')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+          if echo "${{ github.ref_name }}" | grep -qiE '(rc|beta|alpha|pre)'; then
+            echo "PRERELEASE=true" >> $GITHUB_ENV
+          else
+            echo "PRERELEASE=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref }}
+          name: Release ${{ env.VERSION }} (${{ env.DISTRIBUTION }})
+          draft: false
+          prerelease: ${{ env.PRERELEASE == 'true' }}
+          body_path: ./current-changes
+          files: |
+            *.deb
+            *.changes
+            *.buildinfo

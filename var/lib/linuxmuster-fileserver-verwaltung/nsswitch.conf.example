@@ -1,0 +1,18 @@
+# Name Service Switch configuration for a linuxmuster.net administration
+# fileserver. This is the Ubuntu 24.04 default with "winbind" added, so that
+# users and groups from the Active Directory are resolved on this machine.
+
+passwd:         files systemd winbind
+group:          files systemd winbind
+shadow:         files
+gshadow:        files
+
+hosts:          files dns
+networks:       files
+
+protocols:      db files
+services:       db files
+ethers:         db files
+rpc:            db files
+
+netgroup:       nis

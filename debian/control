@@ -1,0 +1,36 @@
+Source: linuxmuster-fileserver-verwaltung
+Section: admin
+Priority: optional
+Maintainer: Kevin Stenzel <mail@kevin-stenzel.de>
+Build-Depends: debhelper-compat (= 13), fakeroot
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: linuxmuster-fileserver-verwaltung
+Architecture: all
+Depends: ${misc:Depends},
+         python3,
+         samba,
+         smbclient,
+         krb5-user,
+         krb5-config,
+         winbind,
+         libpam-winbind,
+         libnss-winbind,
+         libnss-systemd,
+         chrony | ntpsec | systemd-timesyncd,
+         acl,
+         attr
+Recommends: quota
+Homepage: https://github.com/linuxmuster/linuxmuster-fileserver
+Description: Dedicated administration fileserver for linuxmuster.net 7.3
+ Joins a dedicated Ubuntu 24.04 server to the Samba Active Directory of a
+ linuxmuster.net 7.3 installation and provides a single SMB share
+ ("Verwaltung") whose permissions are managed entirely from Windows.
+ .
+ Unlike the upstream linuxmuster-fileserver package, this server hosts no
+ sophomorix-managed data: no home directories, no class or project shares.
+ The share is therefore never touched by sophomorix-repair, and all access
+ control lives in NT ACLs stored in extended attributes.
+ .
+ The package is derived from linuxmuster-fileserver by Netzint GmbH.
