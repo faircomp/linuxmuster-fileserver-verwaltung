@@ -154,6 +154,75 @@ def check_root():
         sys.exit("Dieses Programm muss als root laufen.")
 
 
+def check_not_the_school_server():
+    """
+    Refuse to run on the linuxmuster server or on any Active Directory DC.
+
+    This is the most destructive mistake available: setup rewrites
+    /etc/samba/smb.conf, /etc/krb5.conf and /etc/nsswitch.conf unconditionally
+    and then tries to join the domain. On a domain controller that replaces
+    the "server role = active directory domain controller" configuration along
+    with the sysvol and netlogon shares - the domain would be gone, and with
+    it every login in the school.
+
+    A wrong hostname in an SSH session is all it takes, so this is checked
+    before anything is read from the user and before the first file is
+    written. There is deliberately no override flag: this machine is never a
+    valid target.
+    """
+    reasons = []
+
+    if os.path.exists("/var/lib/samba/private/sam.ldb"):
+        reasons.append("/var/lib/samba/private/sam.ldb existiert (AD-Datenbank)")
+
+    if os.path.exists("/etc/samba/smb.conf"):
+        result = run(["/usr/bin/testparm", "-s", "--parameter-name", "server role"])
+        if "domain controller" in stdout_of(result).lower():
+            reasons.append("smb.conf meldet 'server role = domain controller'")
+
+    for unit in ("samba-ad-dc.service", "samba.service"):
+        if out(run(["/usr/bin/systemctl", "is-active", unit])) == "active":
+            reasons.append("der Dienst %s laeuft" % unit)
+
+    if os.path.isdir("/etc/linuxmuster/sophomorix"):
+        reasons.append("/etc/linuxmuster/sophomorix existiert (linuxmuster-Server)")
+
+    for binary in ("/usr/sbin/sophomorix-group", "/usr/sbin/sophomorix-repair"):
+        if os.path.exists(binary):
+            reasons.append("%s ist installiert" % binary)
+            break
+
+    if os.path.isdir("/srv/samba/schools") and os.listdir("/srv/samba/schools"):
+        reasons.append("/srv/samba/schools enthaelt Daten")
+
+    # An existing linuxmuster-fileserver is just as unsuitable, for a
+    # different reason: it maps IDs with the autorid backend. Overwriting its
+    # smb.conf with the rid backend used here changes every uid and gid on the
+    # machine at once. The POSIX ownership of the outsourced school data would
+    # no longer match, the POSIX-ACL hash stored inside each security.NTACL
+    # would stop matching too, and Samba would then discard the NT ACLs and
+    # rebuild the permissions from ownership that has become meaningless.
+    installed = run(
+        ["/usr/bin/dpkg-query", "-W", "-f=${Status}", "linuxmuster-fileserver"]
+    )
+    if "install ok installed" in stdout_of(installed):
+        reasons.append("das Paket linuxmuster-fileserver ist installiert")
+
+    if reasons:
+        sys.exit(
+            RED
+            + "ABBRUCH: Dieser Rechner ist bereits Teil der "
+            "linuxmuster-Installation.\n\n"
+            + "\n".join("  - " + reason for reason in reasons)
+            + "\n\nDer Verwaltungs-Fileserver gehoert auf eine EIGENE, frische "
+            "Maschine.\nAuf einem Domaenencontroller wuerde das Setup die "
+            "smb.conf ersetzen und die\nDomaene zerstoeren; auf einem "
+            "bestehenden Fileserver wuerde die Umstellung\ndes ID-Mappings die "
+            "Rechte der ausgelagerten Schuldaten unbrauchbar machen.\n"
+            + RESET
+        )
+
+
 def check_hostname():
     """
     The NetBIOS name is limited to 15 characters and the domain join derives
@@ -690,6 +759,8 @@ def create_folders(share, folders, auth):
 
 def cmd_setup(args):
     check_root()
+    # Before the password prompt and before the first write.
+    check_not_the_school_server()
 
     domain = args.domain.upper()
     workgroup = domain.split(".")[0]

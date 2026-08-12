@@ -98,6 +98,13 @@ Vorteil: kein Neustart, und die Definition überlebt jedes Neuschreiben der
 
 ## 3. Voraussetzungen
 
+> ⛔ **Eine eigene, frische Maschine.** Weder der linuxmuster-Server noch ein
+> vorhandener `linuxmuster-fileserver`. `setup` prüft das als Allererstes und
+> bricht ab, bevor es etwas schreibt: Auf einem Domänencontroller würde es die
+> `smb.conf` ersetzen und die Domäne zerstören, auf einem bestehenden
+> Fileserver würde der Wechsel des ID-Mappings von `autorid` auf `rid` die
+> Rechte der dort ausgelagerten Schuldaten unbrauchbar machen.
+
 - Eigene VM, **Ubuntu Server 24.04 LTS** (das ist die Basis von lmn73)
 - Zweite Festplatte für die Daten
 - Kurzer Hostname, **maximal 15 Zeichen** (NetBIOS-Grenze) und ohne Punkt
@@ -234,7 +241,7 @@ werden zu AD-Gruppen.**
 ```bash
 # auf dem linuxmuster-Server
 sophomorix-group --create --group verwaltung
-sophomorix-group --group verwaltung --addmembers sekretariat1,schulleitung
+sophomorix-group --addmembers sekretariat1,schulleitung --group verwaltung
 ```
 
 Eine mit `sophomorix-group` angelegte Gruppe trägt die `sophomorix*`-Attribute

@@ -19,6 +19,15 @@ Passe die Werte an. Alle Befehle laufen als `root`.
 
 ---
 
+> ⛔ **Der Server muss eine eigene, frische Maschine sein.** Nicht der
+> linuxmuster-Server und nicht ein bereits vorhandener
+> `linuxmuster-fileserver`. Auf dem Domänencontroller würde das Setup die
+> `smb.conf` ersetzen und die Domäne zerstören; auf einem bestehenden
+> Fileserver würde die Umstellung des ID-Mappings von `autorid` auf `rid` die
+> Rechte der ausgelagerten Schuldaten unbrauchbar machen. `setup` erkennt
+> beides und bricht ab, bevor es irgendetwas schreibt — verlass dich aber
+> nicht darauf, sondern prüfe den Hostnamen.
+
 ## Schritt 1 — VM anlegen
 
 Eigene VM, **Ubuntu Server 24.04 LTS**. Zwei Platten: System und Daten.
@@ -123,8 +132,8 @@ Beides wirkt nur auf neu geschriebene Daten — vor dem Befüllen setzen.
 
 ```bash
 sophomorix-group --create --group verwaltung
-sophomorix-group --group verwaltung --addmembers sekretariat1,huber,schulleitung
-sophomorix-group --group verwaltung --info        # prüfen
+sophomorix-group --addmembers sekretariat1,huber,schulleitung --group verwaltung
+sophomorix-group --info --group verwaltung        # prüfen
 ```
 
 Die Mitglieder sind vorhandene Konten — auch Lehrerkonten sind in Ordnung.
@@ -144,8 +153,9 @@ Auf dem linuxmuster-Server in
 server;verwaltung01;nopxe;BC:24:11:4D:97:AB;10.0.0.3;;;;server;;0;;;;VERWALTUNG;
 ```
 
-15 Felder. Die Rolle `server` steht in **Feld 9**, Feld 3 ist die
-Hardwareklasse (`nopxe`). Nur Feld 9 entscheidet, ob ein Computerkonto entsteht.
+Die Rolle `server` steht in **Feld 9**, Feld 3 ist die Hardwareklasse
+(`nopxe`); die Zeile endet mit einem Semikolon. Nur Feld 9 entscheidet, ob ein
+Computerkonto entsteht — nicht das erste Feld, das ebenfalls `server` lautet.
 
 ```bash
 linuxmuster-import-devices
