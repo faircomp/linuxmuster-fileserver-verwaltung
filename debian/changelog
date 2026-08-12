@@ -6,7 +6,12 @@ linuxmuster-fileserver-verwaltung (7.3.0-0) lmn73; urgency=low
     entirely through Windows (NT ACLs in extended attributes)
   * Do not create any sophomorix-managed directory structure, so the data
     on this server is never rewritten by sophomorix-repair
-  * Replace the "ntp" dependency of the upstream package, which is not
-    available in Ubuntu 24.04, with "chrony | ntpsec | systemd-timesyncd"
+  * Replace the "ntp" dependency of the upstream package, which in Ubuntu
+    24.04 is only a universe transitional package pulling ntpsec, with
+    "chrony | ntpsec | systemd-timesyncd"
+  * Record the SIDs of the access groups and compare them on every "status"
+    run: a group that is deleted and recreated keeps its name but gets a new
+    SID, which silently invalidates every NT ACL referencing it
+  * Add "repair-acls" to re-establish the baseline ACL after such a change
 
  -- Kevin Stenzel <mail@kevin-stenzel.de>  Wed, 12 Aug 2026 12:00:00 +0200

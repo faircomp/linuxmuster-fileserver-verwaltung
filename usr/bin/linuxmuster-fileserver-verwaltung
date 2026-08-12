@@ -14,6 +14,7 @@
 #########################################################################
 
 import argparse
+import configparser
 import os
 import shutil
 import socket
@@ -25,6 +26,7 @@ import tempfile
 from getpass import getpass
 
 TEMPLATE_DIR = "/var/lib/linuxmuster-fileserver-verwaltung"
+CONFIG_PATH = "/etc/linuxmuster-fileserver-verwaltung/share.conf"
 
 # Well-known SID of NT AUTHORITY\SYSTEM. Used literally so that seeding the
 # ACL does not depend on the display language of the domain controller.
@@ -272,6 +274,76 @@ def get_workgroup():
 
 
 # ---------------------------------------------------------------------------
+# persisted setup state
+# ---------------------------------------------------------------------------
+#
+# The SIDs are recorded deliberately. If an access group is ever deleted and
+# recreated in the AD, it comes back with a *new* SID while every NT ACL on
+# the share still references the old one. The share then denies access even
+# though "the group exists again", and nothing in the Windows dialog explains
+# why. Comparing the current SID against the recorded one turns that silent
+# failure into a plain error message.
+
+
+def _parser():
+    # optionxform keeps the AD spelling of group names intact, and disabling
+    # interpolation stops configparser from choking on a "%" in a path.
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    return parser
+
+
+def save_config(share, path, workgroup, groups, rights_group, admin_user):
+    parser = _parser()
+    parser["share"] = {
+        "name": share,
+        "path": path,
+        "workgroup": workgroup,
+        "rights_group": rights_group,
+        "admin_user": admin_user or "",
+    }
+    parser["groups"] = {name: sid for name, sid in groups}
+
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w") as handle:
+        parser.write(handle)
+    os.chmod(CONFIG_PATH, 0o0644)
+
+
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        raise SetupError(
+            "%s fehlt. Wurde 'setup' auf diesem Server schon ausgefuehrt?"
+            % CONFIG_PATH
+        )
+    parser = _parser()
+    parser.read(CONFIG_PATH)
+    return parser
+
+
+def check_group_sids(parser):
+    """
+    Compare the recorded SIDs against what winbind resolves right now.
+
+    Returns a list of human readable problems; empty means everything matches.
+    """
+    problems = []
+    for name, recorded in parser["groups"].items():
+        result = run(["/usr/bin/wbinfo", "--name-to-sid", name])
+        if result.returncode != 0:
+            problems.append("%s existiert nicht mehr im AD" % name)
+            continue
+        current = out(result).split()[0]
+        if current != recorded:
+            problems.append(
+                "%s hat eine neue SID (%s statt %s) - die Windows-Rechte "
+                "zeigen auf die alte und greifen nicht mehr"
+                % (name, current, recorded)
+            )
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # domain
 # ---------------------------------------------------------------------------
 
@@ -332,7 +404,7 @@ def ping_dc():
 
 def resolve_group(workgroup, group):
     """
-    Resolve an AD group through winbind and return its qualified name.
+    Resolve an AD group through winbind and return (qualified name, SID).
 
     A share that references a group which does not exist locks everyone out
     without any error message, so this is a hard failure.
@@ -345,7 +417,9 @@ def resolve_group(workgroup, group):
             "Lege sie zuerst auf dem linuxmuster-Server an und starte danach "
             "erneut.\n%s" % (qualified, out(result))
         )
-    return qualified
+    # Output looks like "S-1-5-21-...-1234 SID_DOM_GROUP (2)".
+    sid = out(result).split()[0]
+    return qualified, sid
 
 
 # ---------------------------------------------------------------------------
@@ -427,14 +501,16 @@ def configure_share(share, path, groups, admin_user):
     good()
 
 
-def seed_acl(share, workgroup, groups, auth):
+def seed_acl(share, workgroup, groups, auth, label="Setze Start-ACL auf der Freigabe"):
     """
-    Write a restrictive starting ACL so the share is never briefly open.
+    Write a restrictive baseline ACL on the share root.
 
-    Everything after this point is meant to be done in the Windows security
-    dialog; this only establishes a sane baseline to build on.
+    Everything beyond this is meant to happen in the Windows security dialog;
+    this only establishes a sane starting point. It touches the share root
+    only - propagating would wipe the per-folder permissions that are the
+    whole point of this server.
     """
-    step("Setze Start-ACL auf der Freigabe")
+    step(label)
 
     admins = "%s\\Domain Admins" % workgroup
     entries = [
@@ -528,7 +604,8 @@ def cmd_setup(args):
         restart_services()
         ping_dc()
 
-        groups = [resolve_group(workgroup, g) for g in args.group]
+        resolved = [resolve_group(workgroup, g) for g in args.group]
+        groups = [name for name, _ in resolved]
         admin_user = "%s\\administrator" % workgroup if args.admin_user else None
 
         create_directory(args.path, workgroup)
@@ -541,6 +618,12 @@ def cmd_setup(args):
 
         seeded = seed_acl(args.share, workgroup, groups, auth) if groups else False
         granted = grant_disk_operator(workgroup, args.rights_group, auth)
+
+    step("Schreibe %s" % CONFIG_PATH)
+    save_config(
+        args.share, args.path, workgroup, resolved, args.rights_group, admin_user
+    )
+    good()
 
     print()
     print(GREEN + "Setup abgeschlossen." + RESET)
@@ -640,6 +723,25 @@ def cmd_status(args):
     else:
         warn("(NTP nicht synchron)")
 
+    try:
+        parser = load_config()
+    except SetupError:
+        parser = None
+
+    if parser and parser.has_section("groups"):
+        step("Zugriffsgruppen unveraendert")
+        problems = check_group_sids(parser)
+        if problems:
+            bad()
+            for problem in problems:
+                print("    %s" % problem)
+            print(
+                "    Reparatur: linuxmuster-fileserver-verwaltung repair-acls"
+            )
+            ok = False
+        else:
+            good()
+
     print()
     if not ok:
         sys.exit(1)
@@ -662,6 +764,65 @@ def cmd_show(args):
     print("--- NT-ACL ---")
     result = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
     print(out(result) or "(kein NT-ACL gesetzt)")
+
+
+def cmd_repair_acls(args):
+    """
+    Re-apply the baseline ACL and re-record the group SIDs.
+
+    The case this exists for: an access group was deleted and recreated in the
+    AD. It looks unchanged in every dialog, but its SID is new, so the ACLs
+    that reference the old SID quietly stop granting anything. Re-setting the
+    baseline by name repairs the share root; per-folder permissions further
+    down still have to be redone in Windows, which is why this deliberately
+    does not propagate.
+    """
+    check_root()
+    parser = load_config()
+    share = parser["share"]["name"]
+    workgroup = parser["share"]["workgroup"]
+    groups = list(parser["groups"].keys())
+
+    print()
+    problems = check_group_sids(parser)
+    if not problems and not args.force:
+        print("Die Zugriffsgruppen sind unveraendert - nichts zu tun.")
+        print("Mit --force wird die Basis-ACL trotzdem neu gesetzt.")
+        return
+    for problem in problems:
+        print(YELLOW + "  %s" % problem + RESET)
+    print()
+
+    missing = [g for g in groups if run(["/usr/bin/wbinfo", "--name-to-sid", g]).returncode != 0]
+    if missing:
+        raise SetupError(
+            "Diese Gruppen fehlen im AD und muessen zuerst wieder angelegt "
+            "werden:\n  %s" % "\n  ".join(missing)
+        )
+
+    password = args.password or getpass("Passwort fuer %s: " % args.username)
+    with AuthFile(args.username, password, workgroup) as auth:
+        if not seed_acl(
+            share, workgroup, groups, auth, label="Setze Basis-ACL neu"
+        ):
+            raise SetupError("Die Basis-ACL konnte nicht gesetzt werden.")
+
+    resolved = [resolve_group(workgroup, g.split("\\", 1)[-1]) for g in groups]
+    save_config(
+        share,
+        parser["share"]["path"],
+        workgroup,
+        resolved,
+        parser["share"]["rights_group"],
+        parser["share"].get("admin_user") or None,
+    )
+
+    print()
+    print(GREEN + "Basis-ACL erneuert." + RESET)
+    print(
+        "Rechte auf Unterordnern muessen unter Windows nachgezogen werden - "
+        "sie verweisen weiterhin auf die alte SID."
+    )
 
 
 def cmd_save_acl(args):
@@ -735,6 +896,15 @@ def main():
     show_parser = subparsers.add_parser("show", help="Freigabe und Rechte anzeigen")
     show_parser.add_argument("-s", "--share", default="Verwaltung")
 
+    repair_parser = subparsers.add_parser(
+        "repair-acls", help="Basis-ACL nach Gruppenwechsel erneuern"
+    )
+    repair_parser.add_argument("-u", "--username", default="global-admin")
+    repair_parser.add_argument("-p", "--password")
+    repair_parser.add_argument(
+        "--force", action="store_true", help="auch ohne erkannte Aenderung setzen"
+    )
+
     save_parser = subparsers.add_parser("save-acl", help="Rechte sichern (SDDL)")
     save_parser.add_argument("-s", "--share", default="Verwaltung")
     save_parser.add_argument("-u", "--username", default="global-admin")
@@ -754,6 +924,7 @@ def main():
         "setup": cmd_setup,
         "status": cmd_status,
         "show": cmd_show,
+        "repair-acls": cmd_repair_acls,
         "save-acl": cmd_save_acl,
         "restore-acl": cmd_restore_acl,
     }

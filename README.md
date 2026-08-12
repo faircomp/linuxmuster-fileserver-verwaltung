@@ -198,6 +198,8 @@ Was dabei passiert:
 7. Freigabe in der Registry konfigurieren
 8. Restriktive Start-ACL setzen
 9. `SeDiskOperatorPrivilege` vergeben
+10. Konfiguration inklusive der Gruppen-SIDs nach
+    `/etc/linuxmuster-fileserver-verwaltung/share.conf` schreiben (siehe 5.)
 
 Das Passwort wird interaktiv abgefragt und nie über die Kommandozeile an die
 Samba-Werkzeuge übergeben — es läuft über eine kurzlebige Datei mit `0600`,
@@ -215,18 +217,77 @@ linuxmuster-fileserver-verwaltung show
 ## 5. Zugriffsgruppe im AD
 
 Die Verwaltungsfreigabe braucht eine AD-Gruppe. Alle Konten existieren bereits
-(teils als Lehrerkonten) — es geht nur darum, sie zu bündeln.
+(teils als Lehrerkonten) — es geht nur darum, sie zu bündeln. Die Gruppe **muss
+vor dem Setup existieren**; übergib sie mit `-g`, mehrere `-g` sind erlaubt.
 
-Die Gruppe **muss** vor dem Setup existieren. Übergib sie mit `-g`; mehrere
-`-g` sind erlaubt.
+### Erst die Falle: „Gruppen" in der WebUI sind keine AD-Gruppen
 
-Nützlich zu wissen: Das **NT-Token ist transitiv**. Verschachtelte Gruppen
-zählen bei Windows-ACLs also mit — du kannst eine Verwaltungsgruppe bauen, die
-andere Gruppen enthält, und sie in den ACLs verwenden.
+Was die Schulkonsole unter *Kurs → Neue Gruppen* / *Meine Gruppen* anlegt, sind
+sophomorix-**Sessions** — reine Benutzerlisten für den Unterricht, ohne
+AD-Objekt. Die Doku unterscheidet das ausdrücklich: *„Gruppe: … hat kein
+Netzlaufwerk (keine Shares) … nur eine Liste mit Benutzer für einen Kurs"*
+gegenüber *„Projekt: … mit einem gemeinsamen Projektlaufwerk"*. **Nur Projekte
+werden zu AD-Gruppen.**
 
-> Für die konkrete Frage, welcher Gruppentyp in linuxmuster 7.3 der richtige ist
-> (Projektgruppe über die Schulkonsole vs. eigene Gruppe in `OU=Custom`) läuft
-> noch eine Recherche. Ich ergänze diesen Abschnitt, sobald sie vorliegt.
+### Empfehlung für 7.3
+
+```bash
+# auf dem linuxmuster-Server
+sophomorix-group --create --group verwaltung
+sophomorix-group --group verwaltung --addmembers sekretariat1,schulleitung
+```
+
+Eine mit `sophomorix-group` angelegte Gruppe trägt die `sophomorix*`-Attribute
+und ist für sophomorix damit ein *eigenes* Objekt — kein Fremdkörper. Das ist
+der Punkt, auf den es ankommt (siehe unten).
+
+Für Zugriffssteuerung auf externe Dienste ist in linuxmuster eigentlich die
+**Managementgruppe** vorgesehen (`sophomorix-managementgroup`), was inhaltlich
+genau dieser Anwendungsfall ist. Ein WebUI dafür gibt es bis heute nicht
+([webui7 #205](https://github.com/linuxmuster/linuxmuster-webui7/issues/205),
+offen seit 2021), und die Doku dazu ist dünn — Zitat eines Entwicklers:
+*„It is already customizable. You can create managementgroups using sophomorix
+in the terminal … I can't find good documentation on this."*
+
+### Alternativen und warum nicht
+
+| Weg | Bewertung |
+|---|---|
+| **Projekt** über die WebUI (`p_<name>`, mit Schulpräfix `<schule>-p_<name>`) | Funktioniert, per Konstruktion sophomorix-sicher, und Schuladmins pflegen die Mitglieder selbst. Preis: es entsteht ein Projektverzeichnis im Schul-Share, das du nicht brauchst. Gute Wahl, wenn Selbstbedienung wichtiger ist als Kosmetik. |
+| Eigene Gruppe in `OU=Custom` per `samba-tool` | **Nicht empfohlen.** Die OU existiert zwar (pro Schule und global) und kein sophomorix-Code schreibt hinein — ein reservierter Hook. Aber sophomorix erkennt seine Objekte an den `sophomorix*`-Attributen, nicht an der OU, und ob `sophomorix-check`/`-repair` Fremdobjekte anfasst, ist **nicht belegt**. |
+| `OU=LMNGroups` über die API | Erst ab **7.4**, undokumentiert, kein WebUI. Für 7.3 keine Option. |
+
+### Wichtig: Gruppen haben SIDs, und die ändern sich
+
+Windows-ACLs referenzieren **SIDs, keine Namen**. Wird eine Gruppe gelöscht und
+unter demselben Namen neu angelegt, hat sie eine **neue SID** — die ACLs zeigen
+weiter auf die alte und greifen nicht mehr. In jedem Dialog sieht alles normal
+aus. „Die Gruppe ist doch wieder da" heilt die Freigabe also **nicht**.
+
+Deshalb merkt sich `setup` die SIDs in `/etc/linuxmuster-fileserver-verwaltung/share.conf`,
+und `status` vergleicht sie bei jedem Lauf:
+
+```bash
+linuxmuster-fileserver-verwaltung status        # Exit-Code 1 bei Abweichung
+linuxmuster-fileserver-verwaltung repair-acls   # Basis-ACL neu setzen
+```
+
+`status` eignet sich damit direkt als Cron-Job:
+
+```cron
+7 6 * * *  root  /usr/bin/linuxmuster-fileserver-verwaltung status >/dev/null || \
+                 echo "Verwaltungsfreigabe: Zugriffsgruppe hat sich geaendert" | \
+                 mail -s "Fileserver Verwaltung" admin@schule.de
+```
+
+`repair-acls` setzt die **Basis-ACL auf der Freigabewurzel** neu und schreibt
+die SIDs fort. Es propagiert bewusst *nicht* nach unten — das würde genau die
+handvergebenen Ordnerrechte zerstören, um die es hier geht. Rechte auf
+Unterordnern musst du nach so einem Vorfall unter Windows nachziehen.
+
+Nebenbei nützlich: Das **NT-Token ist transitiv**. Verschachtelte Gruppen zählen
+bei Windows-ACLs mit — eine Verwaltungsgruppe darf also andere Gruppen
+enthalten.
 
 ---
 
@@ -328,6 +389,14 @@ Domäne**. Daraus folgt:
   strikt getrennt bleiben, die Doku behandelt ausdrücklich *„ausschließlich den
   Betrieb des pädagogischen Netzes"*. Für einen Verwaltungs-Fileserver als
   Domänenmitglied gibt es keine offizielle Vorlage.
+- **Multischool ist keine Alternative dafür.** Die Schulgrenze ist im Code
+  nachweislich nicht durchgesetzt: `change-school` hat keine Rechteprüfung
+  ([webui7 #287](https://github.com/linuxmuster/linuxmuster-webui7/issues/287)),
+  und in der API fehlte das Schul-Scoping bei allen Gruppen-Schreibendpunkten
+  ([linuxmuster-api #22](https://github.com/linuxmuster/linuxmuster-api/issues/22)).
+  Eine zweite Schule als Verwaltungsmandant zu missbrauchen wäre also eine
+  Scheinsicherheit — davon abgesehen ist das Anlegen selbst undokumentierte
+  Handarbeit.
 - Umgekehrt gilt: Ein separater Server im eigenen VLAN mit eigener Freigabe und
   eigenen ACLs ist deutlich besser als ein Verwaltungsordner im Schul-Share.
 
@@ -353,10 +422,12 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 | Windows zeigt Rechte, die niemand gesetzt hat | kein `security.NTACL` am Objekt; Fallback greift |
 | Rechte nach Restore weg | Backup ohne xattrs (siehe 7.) |
 | Benutzer sieht Ordner nicht | `hide unreadable = yes` — gewollt: keine ACL, kein Ordner |
+| Alle ausgesperrt, Gruppe existiert aber | Gruppe wurde gelöscht und neu angelegt → neue SID (siehe 5.) |
 
 ```bash
-linuxmuster-fileserver-verwaltung status   # Dienste, Join, DC, Freigabe
-linuxmuster-fileserver-verwaltung show     # Freigabe, Share-Rechte, NT-ACL
+linuxmuster-fileserver-verwaltung status       # Dienste, Join, DC, Freigabe, Gruppen-SIDs
+linuxmuster-fileserver-verwaltung show         # Freigabe, Share-Rechte, NT-ACL
+linuxmuster-fileserver-verwaltung repair-acls  # Basis-ACL nach Gruppenwechsel
 wbinfo --ping-dc
 net ads testjoin
 smbcontrol all reload-config               # nach Konfigänderungen, kein Neustart nötig
