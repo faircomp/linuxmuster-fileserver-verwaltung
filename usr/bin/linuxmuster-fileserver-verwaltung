@@ -259,8 +259,10 @@ def configure(domain, workgroup, hostname):
 
 
 def get_workgroup():
+    # testparm prints the value on stdout and its diagnostics on stderr, so
+    # read stdout alone here - the combined output would end in a banner line.
     result = run(["/usr/bin/testparm", "-s", "--parameter-name", "workgroup"])
-    value = out(result).splitlines()[-1].strip() if result.returncode == 0 else ""
+    value = result.stdout.decode(errors="replace").strip()
     if not value:
         raise SetupError(
             "Die Arbeitsgruppe laesst sich nicht aus /etc/samba/smb.conf lesen. "
@@ -302,14 +304,20 @@ def join_domain(auth):
 
 
 def restart_services():
-    for service in ("smbd", "nmbd", "winbind"):
+    # nmbd only serves legacy NetBIOS name resolution. It is frequently masked
+    # on a modern member server, and the share works without it, so it must not
+    # be able to abort the setup.
+    for service, required in (("smbd", True), ("winbind", True), ("nmbd", False)):
         step("Starte %s" % service)
         run(["/usr/bin/systemctl", "enable", service])
         result = run(["/usr/bin/systemctl", "restart", service])
-        if result.returncode != 0:
+        if result.returncode == 0:
+            good()
+        elif required:
             bad()
             raise SetupError("Dienst %s startet nicht:\n%s" % (service, out(result)))
-        good()
+        else:
+            warn("(nicht aktiv - fuer die Freigabe nicht erforderlich)")
 
 
 def ping_dc():
@@ -381,7 +389,8 @@ def configure_share(share, path, groups, admin_user):
     step("Konfiguriere Freigabe [%s]" % share)
     run(["/usr/bin/net", "conf", "addshare", share, path])
 
-    valid_users = list(groups)
+    # Groups need the "@" prefix, the administrator must not have one.
+    valid_users = ["@" + group for group in groups]
     if admin_user:
         valid_users.append(admin_user)
 
@@ -395,7 +404,7 @@ def configure_share(share, path, groups, admin_user):
         ("access based share enum", "yes"),
         # A second gate in front of the NT ACL. Share-level and NT-level
         # permissions are independent; the more restrictive one wins.
-        ("valid users", ", ".join("@" + g for g in groups) if groups else ""),
+        ("valid users", ", ".join(valid_users)),
         # Listing acl_xattr here is required: a share-level "vfs objects"
         # replaces the global value rather than adding to it.
         ("vfs objects", "acl_xattr"),
@@ -567,13 +576,15 @@ def cmd_status(args):
     print()
     ok = True
 
-    for service in ("smbd", "nmbd", "winbind"):
+    for service, required in (("smbd", True), ("winbind", True), ("nmbd", False)):
         step("Dienst %s" % service)
         if out(run(["/usr/bin/systemctl", "is-active", service])) == "active":
             good()
-        else:
+        elif required:
             bad()
             ok = False
+        else:
+            warn("(optional)")
 
     step("Domaenenmitgliedschaft")
     if already_joined():
