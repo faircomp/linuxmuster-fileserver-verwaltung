@@ -103,6 +103,29 @@ def bad(detail=""):
     print(RED + "FEHLER" + RESET + (" " + detail if detail else ""))
 
 
+def resolve_password(args, prompt):
+    """
+    Obtain the password from --password-file, --password, or interactively.
+
+    --password-file is the option to prefer in scripts: a password passed as
+    an argument is visible in the process list to every user on the machine
+    and ends up in the shell history.
+    """
+    path = getattr(args, "password_file", None)
+    if path:
+        try:
+            with open(path) as handle:
+                password = handle.read().strip("\n")
+        except OSError as error:
+            raise SetupError("Kann %s nicht lesen: %s" % (path, error))
+        if not password:
+            raise SetupError("Die Datei %s ist leer." % path)
+        return password
+    if args.password:
+        return args.password
+    return getpass(prompt)
+
+
 class AuthFile:
     """
     A short-lived credentials file for the Samba tools.
@@ -765,7 +788,7 @@ def cmd_setup(args):
     domain = args.domain.upper()
     workgroup = domain.split(".")[0]
     hostname = check_hostname()
-    password = args.password or getpass("Passwort fuer %s@%s: " % (args.username, domain))
+    password = resolve_password(args, "Passwort fuer %s@%s: " % (args.username, domain))
 
     print()
     step("Pruefe Namensaufloesung fuer %s" % domain)
@@ -1027,7 +1050,7 @@ def cmd_repair_acls(args):
             "werden:\n  %s" % "\n  ".join(missing)
         )
 
-    password = args.password or getpass("Passwort fuer %s: " % args.username)
+    password = resolve_password(args, "Passwort fuer %s: " % args.username)
     with AuthFile(args.username, password, workgroup) as auth:
         if not seed_acl(
             share, workgroup, groups, auth, label="Setze Basis-ACL neu"
@@ -1054,7 +1077,7 @@ def cmd_repair_acls(args):
 
 def cmd_save_acl(args):
     check_root()
-    password = args.password or getpass("Passwort fuer %s: " % args.username)
+    password = resolve_password(args, "Passwort fuer %s: " % args.username)
     # Create the file with tight permissions up front: smbcacls would create
     # it with the umask default, leaving the whole permission layout of the
     # administration share world readable until the chmod lands.
@@ -1075,7 +1098,7 @@ def cmd_restore_acl(args):
     check_root()
     if not os.path.exists(args.file):
         sys.exit("Datei %s existiert nicht." % args.file)
-    password = args.password or getpass("Passwort fuer %s: " % args.username)
+    password = resolve_password(args, "Passwort fuer %s: " % args.username)
     with AuthFile(args.username, password, get_workgroup()) as auth:
         result = run(
             ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"]
@@ -1100,7 +1123,11 @@ def main():
         "-p",
         "--password",
         help="sonst interaktive Abfrage. Achtung: als Argument steht das "
-        "Passwort in der Prozessliste und in der Shell-History",
+        "Passwort in der Prozessliste und in der Shell-History - in Skripten "
+        "besser --password-file verwenden",
+    )
+    setup_parser.add_argument(
+        "-P", "--password-file", help="Datei, die das Passwort enthaelt"
     )
     setup_parser.add_argument("-s", "--share", default="Verwaltung")
     setup_parser.add_argument("--path", default="/srv/samba/verwaltung")
@@ -1137,6 +1164,7 @@ def main():
     )
     repair_parser.add_argument("-u", "--username", default="global-admin")
     repair_parser.add_argument("-p", "--password")
+    repair_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
     repair_parser.add_argument(
         "--force", action="store_true", help="auch ohne erkannte Aenderung setzen"
     )
@@ -1145,12 +1173,14 @@ def main():
     save_parser.add_argument("-s", "--share", default="Verwaltung")
     save_parser.add_argument("-u", "--username", default="global-admin")
     save_parser.add_argument("-p", "--password")
+    save_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
     save_parser.add_argument("-f", "--file", default="/root/verwaltung-acl.sddl")
 
     restore_parser = subparsers.add_parser("restore-acl", help="Rechte zurueckspielen")
     restore_parser.add_argument("-s", "--share", default="Verwaltung")
     restore_parser.add_argument("-u", "--username", default="global-admin")
     restore_parser.add_argument("-p", "--password")
+    restore_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
     restore_parser.add_argument("-f", "--file", default="/root/verwaltung-acl.sddl")
 
     args = parser.parse_args()
