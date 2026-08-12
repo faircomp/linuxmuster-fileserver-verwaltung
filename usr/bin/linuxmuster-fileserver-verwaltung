@@ -656,6 +656,10 @@ def cmd_setup(args):
 
 
 def cmd_status(args):
+    # "net conf" reads the Samba registry and getfattr reads the security
+    # namespace; both need root. Without it the checks would not fail, they
+    # would quietly report the wrong thing.
+    check_root()
     print()
     ok = True
 
@@ -748,6 +752,7 @@ def cmd_status(args):
 
 
 def cmd_show(args):
+    check_root()
     path = out(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
     if not path or not os.path.isdir(path):
         sys.exit("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)

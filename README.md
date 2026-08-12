@@ -450,6 +450,17 @@ Installations-Smoke-Test (Paket installieren, CLI aufrufen, gerenderte
 
 ## Lizenz und Herkunft
 
+Eigener Code: **GPL-3.0-or-later**.
+
 Abgeleitet von `linuxmuster-fileserver` (Netzint GmbH, Lukas Spitznagel).
-Die Konfigurationsvorlagen und der Aufbau der Setup-CLI folgen dem Original;
-Zweck, Freigabemodell, ID-Mapping und Rechtekonzept unterscheiden sich.
+Zweck, Freigabemodell, ID-Mapping und Rechtekonzept unterscheiden sich; die
+Setup-CLI ist neu geschrieben. Nah am Original bleiben `krb5.conf.example`,
+`nsswitch.conf.example`, `debian/rules` und das `Makefile`.
+
+> ⚠️ **Offene Lizenzfrage.** Das Upstream-Repository enthält **keine
+> LICENSE-Datei** und nennt weder in `debian/control` noch im README noch in
+> einer Quelldatei eine Lizenz. Damit ist der Lizenzstatus des Originals — und
+> der davon abgeleiteten Teile — ungeklärt. Vor einer öffentlichen Verbreitung
+> sollte das mit Netzint GmbH geklärt oder die betroffenen Dateien durch
+> eigenständige Implementierungen ersetzt werden. Details in
+> [`debian/copyright`](debian/copyright).
