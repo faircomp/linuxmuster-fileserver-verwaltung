@@ -338,11 +338,15 @@ Zusätzlich diese Dateien sichern:
 /etc/linuxmuster-fileserver-verwaltung/share.conf
 ```
 
-Und die Rechte separat als SDDL:
+Und die NT-ACLs aller Objekte separat:
 
 ```bash
-linuxmuster-fileserver-verwaltung save-acl -f /root/verwaltung-acl.sddl
+linuxmuster-fileserver-verwaltung save-acl -f /root/verwaltung-ntacl.dump
 ```
+
+Zurückspielen mit `restore-acl -f …`. Am Testsystem geprüft: alle ACLs
+gelöscht, aus der Sicherung wiederhergestellt, Wurzel und Unterordner
+identisch.
 
 ### Überwachung
 
@@ -400,3 +404,17 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 ```
 
 Danach greift der Fallback und du kannst die Rechte neu setzen.
+
+## Server wieder abbauen
+
+```bash
+net ads leave -U administrator          # auf dem Fileserver
+```
+
+Das entfernt das Rechnerkonto, **nicht** aber den DNS-Eintrag. Den musst du
+auf dem linuxmuster-Server separat löschen, sonst zeigt der Name weiter auf
+eine IP, die es nicht mehr gibt:
+
+```bash
+samba-tool dns delete localhost <domain> verwaltung01 A <ip> -U administrator
+```

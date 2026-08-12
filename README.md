@@ -371,12 +371,17 @@ Zusätzlich sichern:
 
 `winbindd_idmap.tdb` ist entbehrlich — mit `rid` sind die IDs deterministisch.
 
-Zusätzlich die Rechte selbst als SDDL sichern (unabhängig vom Dateisystem):
+Zusätzlich die NT-ACLs aller Objekte separat sichern:
 
 ```bash
-linuxmuster-fileserver-verwaltung save-acl -f /root/verwaltung-acl.sddl
-linuxmuster-fileserver-verwaltung restore-acl -f /root/verwaltung-acl.sddl
+linuxmuster-fileserver-verwaltung save-acl    -f /root/verwaltung-ntacl.dump
+linuxmuster-fileserver-verwaltung restore-acl -f /root/verwaltung-ntacl.dump
 ```
+
+Beides arbeitet auf der xattr-Ebene (`getfattr`/`setfattr`), nicht mit
+`smbcacls` — dessen `--save`/`--restore`/`--recurse` gibt es in der Samba-Version
+von Ubuntu 24.04 (4.19) schlicht nicht. `save-acl` bricht ab, statt eine leere
+Sicherung zu hinterlassen.
 
 **Nicht verwenden:** `cp` ohne `-a`, `scp`, GUI-Dateimanager, `unzip` — sie
 verlieren xattrs. Snapshots auf Block-Ebene und `zfs send|recv` sind unkritisch.
