@@ -564,7 +564,7 @@ def resolve_group(workgroup, group):
 # ---------------------------------------------------------------------------
 
 
-def create_directory(path, workgroup):
+def create_directory(path, workgroup, username):
     step("Lege %s an" % path)
     os.makedirs(path, exist_ok=True)
     good()
@@ -582,15 +582,25 @@ def create_directory(path, workgroup):
     # The share is served with "acl_xattr:ignore system acls = yes", so the
     # POSIX layer inside the share is deliberately not authoritative. The
     # share root is the one exception: the kernel still enforces its mode on
-    # traversal. Restricting it to Domain Users keeps every non-AD account
-    # out, while the NT ACL does the actual per-folder filtering.
+    # traversal. The group is Domain Users, which keeps every non-AD account
+    # out while the NT ACL does the actual per-folder filtering.
+    #
+    # The owner has to be a DOMAIN account, and that is not cosmetic. Before
+    # the first NT ACL exists, Samba synthesizes one that grants the owner and
+    # SYSTEM only. With root as the owner that owner is S-1-22-1-0, a local
+    # SID no domain account holds - so nobody has WRITE_DAC and the very first
+    # "smbcacls --set" fails with NT_STATUS_ACCESS_DENIED. Making the account
+    # that seeds the ACL the owner breaks that chicken-and-egg. Once the NT
+    # ACL is stored, the POSIX owner no longer decides anything.
     step("Setze Basisrechte auf %s" % path)
-    domain_users = "%s\\domain users" % workgroup
-    result = run(["/usr/bin/chown", "root:%s" % domain_users, path])
+    owner = "%s\\%s" % (workgroup, username)
+    group = "%s\\domain users" % workgroup
+    result = run(["/usr/bin/chown", "%s:%s" % (owner, group), path])
     if result.returncode != 0:
         raise SetupError(
-            "Kann den Besitzer von %s nicht auf '%s' setzen:\n%s"
-            % (path, domain_users, out(result))
+            "Kann den Besitzer von %s nicht auf '%s:%s' setzen:\n%s\n"
+            "Loest winbind die Konten auf? Pruefe 'getent passwd %s'."
+            % (path, owner, group, out(result), owner)
         )
     os.chmod(path, 0o0770)
     good()
@@ -835,7 +845,7 @@ def cmd_setup(args):
         groups = [name for name, _ in resolved]
         admin_user = "%s\\administrator" % workgroup if args.admin_user else None
 
-        create_directory(args.path, workgroup)
+        create_directory(args.path, workgroup, args.username)
         configure_share(args.share, args.path, workgroup, groups, admin_user)
 
         step("Lade Samba-Konfiguration neu")
@@ -856,10 +866,12 @@ def cmd_setup(args):
     )
     good()
 
+    fqdn = "%s.%s" % (hostname, domain.lower())
+
     print()
     print(GREEN + "Setup abgeschlossen." + RESET)
     print()
-    print("  Freigabe   \\\\%s\\%s" % (socket.getfqdn(), args.share))
+    print("  Freigabe   \\\\%s\\%s" % (fqdn, args.share))
     print("  Pfad       %s" % args.path)
     print("  Zugriff    %s" % (", ".join(groups) if groups else "(keine Gruppe gesetzt)"))
     print()
@@ -891,7 +903,7 @@ def cmd_setup(args):
         print()
 
     print("Naechster Schritt: an einem Windows-Client als Domaenen-Admin")
-    print("  \\\\%s\\%s  oeffnen" % (socket.getfqdn(), args.share))
+    print("  \\\\%s\\%s  oeffnen" % (fqdn, args.share))
     print("  -> Eigenschaften -> Sicherheit -> Erweitert")
     if seeded:
         print("Eine restriktive Start-ACL ist bereits gesetzt.")
