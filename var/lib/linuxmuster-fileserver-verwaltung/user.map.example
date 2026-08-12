@@ -1,7 +1,0 @@
-# /etc/samba/user.map
-#
-# Maps the domain administrator onto the local root account. Without this
-# mapping, administrative calls such as "net rpc rights grant" tend to fail
-# with NT_STATUS_ACCESS_DENIED on a domain member.
-
-!root = %%WORKGROUP%%\Administrator %%WORKGROUP%%\administrator

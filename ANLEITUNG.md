@@ -335,7 +335,6 @@ Zusätzlich diese Dateien sichern:
 /var/lib/samba/private/secrets.tdb     Domänenbeitritt
 /etc/krb5.keytab
 /etc/samba/smb.conf
-/etc/samba/user.map
 /etc/linuxmuster-fileserver-verwaltung/share.conf
 ```
 

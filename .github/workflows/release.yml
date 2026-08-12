@@ -54,7 +54,7 @@ jobs:
 
       - name: The templates must be installed
         run: |
-          for template in smb.conf krb5.conf nsswitch.conf user.map; do
+          for template in smb.conf krb5.conf nsswitch.conf; do
             test -f "/var/lib/linuxmuster-fileserver-verwaltung/$template.example" \
               || { echo "missing: $template.example"; exit 1; }
           done

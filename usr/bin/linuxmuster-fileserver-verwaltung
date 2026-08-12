@@ -369,7 +369,6 @@ def configure(domain, workgroup, hostname):
     for template, target in (
         ("krb5.conf.example", "/etc/krb5.conf"),
         ("nsswitch.conf.example", "/etc/nsswitch.conf"),
-        ("user.map.example", "/etc/samba/user.map"),
         ("smb.conf.example", "/etc/samba/smb.conf"),
     ):
         step("Schreibe %s" % target)

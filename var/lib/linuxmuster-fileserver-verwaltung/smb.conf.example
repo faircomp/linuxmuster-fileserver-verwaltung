@@ -57,11 +57,16 @@
   template shell = /usr/sbin/nologin
   template homedir = /dev/null
 
-  # Bildet den Domaenen-Administrator auf root ab. Ohne diese Zuordnung
-  # scheitern "net rpc rights"-Aufrufe gern mit NT_STATUS_ACCESS_DENIED.
-  # Der Windows-Token bleibt unveraendert, nur die Unix-Identitaet wird uid 0;
-  # die Pruefung der NT-ACL findet also weiterhin statt.
-  username map = /etc/samba/user.map
+  # Hier stand einmal "username map = /etc/samba/user.map" mit einer
+  # Zuordnung des Domaenen-Administrators auf root. Das ist eine Empfehlung
+  # fuer Domaenencontroller - auf einem MITGLIEDSSERVER bricht sie den
+  # Session-Setup vollstaendig: jede SMB-Anmeldung scheitert dann mit
+  # NT_STATUS_INVALID_TOKEN, auch die des Administrators. Am realen System
+  # verifiziert. Nicht wieder einbauen.
+  #
+  # Fuer "net rpc rights" wird sie nicht gebraucht: Mitglieder der
+  # Domaenen-Admins bekommen auf einem Mitgliedsserver ohnehin die SID
+  # BUILTIN\Administrators in ihr Token.
 
   # --- Windows-ACLs ------------------------------------------------------
   # Speichert den vollstaendigen NT-Security-Descriptor im erweiterten

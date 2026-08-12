@@ -195,7 +195,7 @@ linuxmuster-fileserver-verwaltung setup \
 Was dabei passiert:
 
 1. Preflight: Hostname-Länge, DNS, Domänencontroller auffindbar, Zeitsync
-2. `krb5.conf`, `nsswitch.conf`, `user.map`, `smb.conf` aus Vorlagen schreiben
+2. `krb5.conf`, `nsswitch.conf`, `smb.conf` aus Vorlagen schreiben
    (bestehende Dateien werden als `*.lmn-orig` gesichert), `testparm` prüfen
 3. `net ads join` und Keytab erzeugen
 4. `smbd`, `nmbd`, `winbind` starten
@@ -367,7 +367,7 @@ Zusätzlich sichern:
 | `/var/lib/samba/share_info.tdb` | Freigabeberechtigungen |
 | `/var/lib/samba/private/secrets.tdb` | Domänenbeitritt |
 | `/etc/krb5.keytab` | Kerberos-Keytab |
-| `/etc/samba/smb.conf`, `/etc/samba/user.map` | Konfiguration |
+| `/etc/samba/smb.conf` | Konfiguration |
 
 `winbindd_idmap.tdb` ist entbehrlich — mit `rid` sind die IDs deterministisch.
 
@@ -425,7 +425,7 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 | Symptom | Ursache |
 |---|---|
 | Join schlägt fehl | DNS zeigt nicht auf den AD-DC (siehe 3.), Hostname > 15 Zeichen, Uhr weicht > 5 Min ab, oder Server fehlt in `devices.csv` |
-| `NT_STATUS_ACCESS_DENIED` bei `net rpc rights` | `/etc/samba/user.map` fehlt — das Paket schreibt sie |
+| `NT_STATUS_INVALID_TOKEN` bei jedem SMB-Zugriff | eine `username map`, die ein Domänenkonto auf `root` abbildet. Auf einem Mitgliedsserver bricht das den Session-Setup — Zeile entfernen |
 | Windows zeigt Rechte, die niemand gesetzt hat | kein `security.NTACL` am Objekt; Fallback greift |
 | Rechte nach Restore weg | Backup ohne xattrs (siehe 7.) |
 | Benutzer sieht Ordner nicht | `hide unreadable = yes` — gewollt: keine ACL, kein Ordner |
