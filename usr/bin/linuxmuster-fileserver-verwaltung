@@ -1022,9 +1022,36 @@ def cmd_show(args):
     print("--- POSIX (nur der Freigabe-Wurzel, sonst nicht massgeblich) ---")
     print(out(run(["/usr/bin/getfacl", "-p", path])))
     print()
-    print("--- NT-ACL ---")
-    result = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
-    print(out(result) or "(kein NT-ACL gesetzt)")
+    print("--- NT-ACL der Freigabewurzel ---")
+    # samba-tool decodes the descriptor; getfattr would only print the raw
+    # base64 blob, which tells nobody anything.
+    decoded = run(["/usr/bin/samba-tool", "ntacl", "get", "--as-sddl", path])
+    if decoded.returncode == 0 and stdout_of(decoded):
+        print(stdout_of(decoded))
+    else:
+        present = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
+        if "security.NTACL" in out(present):
+            print("gesetzt (nicht dekodierbar auf diesem System)")
+            print("Lesbar anzeigen:  smbcacls //localhost/%s / -U <admin>" % args.share)
+        else:
+            print("(kein NT-ACL gesetzt)")
+
+    count = run(
+        [
+            "/usr/bin/getfattr",
+            "-R",
+            "-d",
+            "-m",
+            r"^security\.NTACL$",
+            "--absolute-names",
+            path,
+        ]
+    )
+    objects = sum(
+        1 for line in stdout_of(count).splitlines() if line.startswith("# file:")
+    )
+    print()
+    print("Objekte mit eigener NT-ACL unterhalb der Freigabe: %d" % objects)
 
 
 def cmd_repair_acls(args):
@@ -1086,39 +1113,84 @@ def cmd_repair_acls(args):
     )
 
 
-def cmd_save_acl(args):
-    check_root()
-    password = resolve_password(args, "Passwort fuer %s: " % args.username)
-    # Create the file with tight permissions up front: smbcacls would create
-    # it with the umask default, leaving the whole permission layout of the
-    # administration share world readable until the chmod lands.
-    os.close(os.open(args.file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o0600))
-    os.chmod(args.file, 0o0600)
-    with AuthFile(args.username, password, get_workgroup()) as auth:
-        result = run(
-            ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"]
-            + auth.args
-            + ["--recurse", "--save", args.file]
+def share_path(args):
+    """Return the share path from the saved configuration or the registry."""
+    try:
+        return load_config()["share"]["path"]
+    except (SetupError, KeyError):
+        path = stdout_of(
+            run(["/usr/bin/net", "conf", "getparm", args.share, "path"])
         )
+        if not path or not os.path.isdir(path):
+            raise SetupError("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)
+        return path
+
+
+def cmd_save_acl(args):
+    """
+    Back up every NT ACL below the share as an xattr dump.
+
+    Not smbcacls: its --save/--restore/--recurse options do not exist in the
+    Samba 4.19 that Ubuntu 24.04 ships - they were silently rejected and left
+    an empty file behind. Dumping security.NTACL covers every object in one
+    pass, needs no credentials, and restores byte for byte.
+    """
+    check_root()
+    path = share_path(args)
+
+    handle = os.open(args.file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o0600)
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/getfattr",
+                "-R",
+                "-d",
+                "-m",
+                r"^security\.NTACL$",
+                "--absolute-names",
+                path,
+            ],
+            stdout=handle,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "LC_ALL": "C"},
+            stdin=subprocess.DEVNULL,
+        )
+    finally:
+        os.close(handle)
+
     if result.returncode != 0:
-        sys.exit(out(result))
-    print("Rechte gesichert nach %s" % args.file)
+        raise SetupError(
+            "Sicherung fehlgeschlagen:\n%s" % result.stderr.decode(errors="replace")
+        )
+
+    with open(args.file) as dump:
+        objects = sum(1 for line in dump if line.startswith("# file:"))
+    if objects == 0:
+        raise SetupError(
+            "Es wurde kein einziges NT-ACL gefunden - die Sicherung waere leer.\n"
+            "Wurde unter %s schon jemals ein Recht gesetzt?" % path
+        )
+
+    print()
+    print("%d Objekte gesichert nach %s" % (objects, args.file))
 
 
 def cmd_restore_acl(args):
     check_root()
     if not os.path.exists(args.file):
-        sys.exit("Datei %s existiert nicht." % args.file)
-    password = resolve_password(args, "Passwort fuer %s: " % args.username)
-    with AuthFile(args.username, password, get_workgroup()) as auth:
-        result = run(
-            ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"]
-            + auth.args
-            + ["--restore", args.file]
-        )
+        raise SetupError("Datei %s existiert nicht." % args.file)
+
+    with open(args.file) as dump:
+        objects = sum(1 for line in dump if line.startswith("# file:"))
+    if objects == 0:
+        raise SetupError("%s enthaelt keine ACL-Eintraege." % args.file)
+
+    result = run(["/usr/bin/setfattr", "--restore=%s" % args.file])
     if result.returncode != 0:
-        sys.exit(out(result))
-    print("Rechte aus %s wiederhergestellt." % args.file)
+        raise SetupError("Wiederherstellung fehlgeschlagen:\n%s" % out(result))
+
+    print()
+    print("%d Objekte aus %s wiederhergestellt." % (objects, args.file))
 
 
 def main():
@@ -1180,19 +1252,17 @@ def main():
         "--force", action="store_true", help="auch ohne erkannte Aenderung setzen"
     )
 
-    save_parser = subparsers.add_parser("save-acl", help="Rechte sichern (SDDL)")
+    save_parser = subparsers.add_parser(
+        "save-acl", help="alle NT-ACLs der Freigabe sichern"
+    )
     save_parser.add_argument("-s", "--share", default="Verwaltung")
-    save_parser.add_argument("-u", "--username", default="global-admin")
-    save_parser.add_argument("-p", "--password")
-    save_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
-    save_parser.add_argument("-f", "--file", default="/root/verwaltung-acl.sddl")
+    save_parser.add_argument("-f", "--file", default="/root/verwaltung-ntacl.dump")
 
-    restore_parser = subparsers.add_parser("restore-acl", help="Rechte zurueckspielen")
+    restore_parser = subparsers.add_parser(
+        "restore-acl", help="gesicherte NT-ACLs zurueckspielen"
+    )
     restore_parser.add_argument("-s", "--share", default="Verwaltung")
-    restore_parser.add_argument("-u", "--username", default="global-admin")
-    restore_parser.add_argument("-p", "--password")
-    restore_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
-    restore_parser.add_argument("-f", "--file", default="/root/verwaltung-acl.sddl")
+    restore_parser.add_argument("-f", "--file", default="/root/verwaltung-ntacl.dump")
 
     args = parser.parse_args()
     print(BANNER)
