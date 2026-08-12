@@ -42,33 +42,37 @@
   idmap config %%WORKGROUP%% : range = 10000-999999
 
   # --- Kerberos / winbind ----------------------------------------------
-  dedicated keytab file = /etc/krb5.keytab
+  # Haelt neben secrets.tdb auch /etc/krb5.keytab aktuell. Der Pfad wird
+  # bewusst nicht ueber "dedicated keytab file" gesetzt: dieser Parameter
+  # wirkt laut Handbuch nur bei "kerberos method = dedicated keytab", und
+  # /etc/krb5.keytab ist ohnehin der Kerberos-Standardpfad.
   kerberos method = secrets and keytab
-  winbind refresh tickets = yes
-  winbind offline logon = no
 
   # AD-Benutzer sollen sich an diesem Server nicht anmelden koennen. Das ist
   # hier kein Detail: die Freigabe arbeitet mit
   # "acl_xattr:ignore system acls = yes", die POSIX-Rechte unterhalb der
   # Freigabe sind deshalb absichtlich wirkungslos. Ein lokaler Shell-Zugang
-  # wuerde die Windows-Rechte vollstaendig umgehen.
+  # wuerde die Windows-Rechte vollstaendig umgehen. Auf den SMB-Zugriff hat
+  # das keinen Einfluss - smbd wertet die Login-Shell nie aus.
   template shell = /usr/sbin/nologin
   template homedir = /dev/null
 
-  # Fehlgeschlagene Namensaufloesung soll auffallen, statt still zu bleiben.
-  winbind enum users = no
-  winbind enum groups = no
-
   # Bildet den Domaenen-Administrator auf root ab. Ohne diese Zuordnung
   # scheitern "net rpc rights"-Aufrufe gern mit NT_STATUS_ACCESS_DENIED.
+  # Der Windows-Token bleibt unveraendert, nur die Unix-Identitaet wird uid 0;
+  # die Pruefung der NT-ACL findet also weiterhin statt.
   username map = /etc/samba/user.map
 
   # --- Windows-ACLs ------------------------------------------------------
   # Speichert den vollstaendigen NT-Security-Descriptor im erweiterten
   # Attribut security.NTACL. Die share-spezifischen acl_xattr-Optionen
   # stehen bei der Freigabe selbst (net conf), nicht hier.
+  #
+  # "map acl inherit" fehlt hier absichtlich: es gehoert zur Abbildung auf
+  # POSIX-Draft-ACLs, die von "acl_xattr:ignore system acls = yes" gerade
+  # abgeschaltet wird. Ebenso ueberfluessig sind "inherit acls" und
+  # create/directory mask - die erzwingt das Modul selbst.
   vfs objects = acl_xattr
-  map acl inherit = yes
 
   # --- Dies ist kein Druckserver -----------------------------------------
   load printers = no

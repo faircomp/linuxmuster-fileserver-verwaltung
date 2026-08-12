@@ -163,7 +163,7 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxmuster.net.gpg] https:/
   > /etc/apt/sources.list.d/lmn73.list
 
 apt update
-apt install ./linuxmuster-fileserver-verwaltung_7.3.0-0_all.deb
+apt install ./linuxmuster-fileserver-verwaltung_7.3.0_all.deb
 ```
 
 Bei der Kerberos-Abfrage des Installers den **Realm leer lassen** — `setup`

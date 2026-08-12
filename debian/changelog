@@ -1,4 +1,4 @@
-linuxmuster-fileserver-verwaltung (7.3.0-0) lmn73; urgency=low
+linuxmuster-fileserver-verwaltung (7.3.0) lmn73; urgency=low
 
   * Initial release, derived from linuxmuster-fileserver (Netzint GmbH)
   * Target platform: Ubuntu 24.04 LTS, linuxmuster.net 7.3
@@ -6,12 +6,37 @@ linuxmuster-fileserver-verwaltung (7.3.0-0) lmn73; urgency=low
     entirely through Windows (NT ACLs in extended attributes)
   * Do not create any sophomorix-managed directory structure, so the data
     on this server is never rewritten by sophomorix-repair
+  * Use the rid idmap backend instead of autorid: sophomorix writes no
+    uidNumber/gidNumber into the AD, which rules out the ad/RFC2307 backend,
+    and rid needs no persistent state to stay consistent across servers
+  * Serve the share with "acl_xattr:ignore system acls = yes" so the NT ACL
+    is the only authority and the POSIX-hash invalidation cannot silently
+    discard the Windows permissions
   * Replace the "ntp" dependency of the upstream package, which in Ubuntu
     24.04 is only a universe transitional package pulling ntpsec, with
     "chrony | ntpsec | systemd-timesyncd"
+  * Refuse to continue when no domain controller can be found, when the
+    hostname exceeds the NetBIOS limit, or when the access group does not
+    resolve - all three otherwise fail in ways that are hard to diagnose
+  * Take the NetBIOS domain name from the CLDAP reply rather than assuming
+    it is the first label of the DNS domain; getting this wrong would put
+    every domain account into the tdb fallback range instead of the rid range
+  * Quote every entry of "valid users" and "admin users": Samba splits list
+    parameters on whitespace, so an unquoted "Domain Admins" would become two
+    meaningless entries and lock out everyone, silently
+  * Always include Domain Admins in "valid users" and always seed a baseline
+    NT ACL, including when no access group is given - without either, not
+    even an administrator could open the share to set permissions
+  * Create --folder directories over SMB so they inherit the share ACL;
+    created locally they would have no NT ACL and stay root:root 0755, which
+    makes them invisible and unwritable
   * Record the SIDs of the access groups and compare them on every "status"
     run: a group that is deleted and recreated keeps its name but gets a new
     SID, which silently invalidates every NT ACL referencing it
   * Add "repair-acls" to re-establish the baseline ACL after such a change
+  * Pass credentials to the Samba tools through a short-lived 0600 file
+    instead of "-U user%password", which would expose them in the process list
+  * Pin the locale of every Samba invocation: several checks match on English
+    output that is translatable
 
  -- Kevin Stenzel <mail@kevin-stenzel.de>  Wed, 12 Aug 2026 12:00:00 +0200

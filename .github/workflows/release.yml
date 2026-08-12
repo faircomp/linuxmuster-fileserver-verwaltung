@@ -69,7 +69,9 @@ jobs:
           sudo testparm -s
 
   github-release:
-    needs: deb-package
+    # Also gated on smoke-test: releasing a package that cannot be installed
+    # is worse than not releasing at all.
+    needs: [deb-package, smoke-test]
     if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
     name: GitHub Release
     runs-on: ubuntu-24.04

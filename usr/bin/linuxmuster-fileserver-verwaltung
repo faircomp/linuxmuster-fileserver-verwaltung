@@ -58,7 +58,18 @@ class SetupError(Exception):
 
 def run(command, check=False):
     """Execute a command and return the CompletedProcess."""
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        # Several checks below match on English output of the Samba tools
+        # ("Join is OK", "Domain Controller"). Those strings are translatable,
+        # so pin the locale instead of hoping no message catalogue is present.
+        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+        # Nothing here is interactive. Without this a tool that unexpectedly
+        # prompts for a password would hang the run with no output.
+        stdin=subprocess.DEVNULL,
+    )
     if check and result.returncode != 0:
         raise SetupError(
             "Befehl fehlgeschlagen: %s\n%s" % (" ".join(command), out(result))
@@ -69,6 +80,11 @@ def run(command, check=False):
 def out(result):
     """Return the combined output of a CompletedProcess as text."""
     return (result.stdout + result.stderr).decode(errors="replace").strip()
+
+
+def stdout_of(result):
+    """Return only stdout - use this whenever the output gets parsed."""
+    return result.stdout.decode(errors="replace").strip()
 
 
 def step(message):
@@ -104,12 +120,18 @@ class AuthFile:
 
     def __enter__(self):
         handle, self.path = tempfile.mkstemp(prefix="lmn-verwaltung-", dir="/run")
-        os.fchmod(handle, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(handle, "w") as credentials:
-            credentials.write(
-                "username=%s\npassword=%s\ndomain=%s\n"
-                % (self.username, self.password, self.workgroup)
-            )
+        try:
+            os.fchmod(handle, stat.S_IRUSR | stat.S_IWUSR)
+            with os.fdopen(handle, "w") as credentials:
+                credentials.write(
+                    "username=%s\npassword=%s\ndomain=%s\n"
+                    % (self.username, self.password, self.workgroup)
+                )
+        except OSError:
+            # __exit__ never runs if __enter__ raises, so clean up here or the
+            # file with the password stays behind.
+            os.unlink(self.path)
+            raise
         return self
 
     def __exit__(self, *_):
@@ -174,10 +196,14 @@ def check_dns(domain):
 
 def check_domain_controller():
     """
-    Locate a domain controller the way the join will.
+    Locate a domain controller the way the join will, and report its NetBIOS
+    domain name.
 
     Resolving the domain name alone is not enough: the join needs the SRV
-    records that only the AD DNS serves, so probe for a DC directly.
+    records that only the AD DNS serves, so probe for a DC directly. The
+    CLDAP reply also carries the pre-Windows-2000 domain name, which is the
+    authoritative value for "workgroup" - deriving it from the first label of
+    the DNS name is only a guess.
     """
     result = run(["/usr/bin/net", "ads", "lookup"])
     if result.returncode != 0 or "Domain Controller" not in out(result):
@@ -185,6 +211,11 @@ def check_domain_controller():
             "Es wurde kein Domaenencontroller gefunden.\n\n%s\n\nAusgabe:\n%s"
             % (DNS_HINT, out(result))
         )
+
+    for line in stdout_of(result).splitlines():
+        if line.strip().startswith("Pre-Win2k Domain:"):
+            return line.split(":", 1)[1].strip()
+    return None
 
 
 def check_time_sync():
@@ -255,8 +286,19 @@ def configure(domain, workgroup, hostname):
 
     step("Pruefe die erzeugte smb.conf")
     result = run(["/usr/bin/testparm", "-s"])
-    if result.returncode != 0:
-        raise SetupError("Die erzeugte smb.conf ist ungueltig:\n%s" % out(result))
+    # testparm exits 0 even for semantic problems: an invalid idmap range or
+    # an unknown parameter is reported on stderr and still yields success.
+    # Checking the exit code alone would wave those through.
+    complaints = [
+        line
+        for line in out(result).splitlines()
+        if line.startswith("ERROR:") or "Unknown parameter encountered" in line
+    ]
+    if result.returncode != 0 or complaints:
+        raise SetupError(
+            "Die erzeugte smb.conf ist ungueltig:\n%s"
+            % ("\n".join(complaints) if complaints else out(result))
+        )
     good()
 
 
@@ -264,7 +306,7 @@ def get_workgroup():
     # testparm prints the value on stdout and its diagnostics on stderr, so
     # read stdout alone here - the combined output would end in a banner line.
     result = run(["/usr/bin/testparm", "-s", "--parameter-name", "workgroup"])
-    value = result.stdout.decode(errors="replace").strip()
+    value = stdout_of(result)
     if not value:
         raise SetupError(
             "Die Arbeitsgruppe laesst sich nicht aus /etc/samba/smb.conf lesen. "
@@ -381,9 +423,13 @@ def restart_services():
     # be able to abort the setup.
     for service, required in (("smbd", True), ("winbind", True), ("nmbd", False)):
         step("Starte %s" % service)
-        run(["/usr/bin/systemctl", "enable", service])
+        enabled = run(["/usr/bin/systemctl", "enable", service])
         result = run(["/usr/bin/systemctl", "restart", service])
-        if result.returncode == 0:
+        if result.returncode == 0 and enabled.returncode != 0:
+            # Running now but not enabled means the share disappears at the
+            # next reboot - too quiet a failure to report as success.
+            warn("(laeuft, startet aber nicht automatisch mit)")
+        elif result.returncode == 0:
             good()
         elif required:
             bad()
@@ -459,23 +505,54 @@ def create_directory(path, workgroup):
     good()
 
 
-def configure_share(share, path, groups, admin_user):
+SHARE_NAME_FORBIDDEN = set('%<>*?|/\\+=;:",')
+
+
+def validate_share_name(share):
+    """
+    Reject share names that Samba considers invalid.
+
+    "net conf addshare" checks this, but "net conf setparm" does not - and the
+    code below falls back to setparm, so a bad name would silently produce a
+    broken registry share while every step still reported success.
+    """
+    bad = sorted(SHARE_NAME_FORBIDDEN & set(share))
+    if bad or not share:
+        raise SetupError(
+            "Der Freigabename '%s' ist ungueltig. Nicht erlaubt: %s"
+            % (share, " ".join(bad) or "(leer)")
+        )
+
+
+def configure_share(share, path, workgroup, groups, admin_user):
+    validate_share_name(share)
     step("Konfiguriere Freigabe [%s]" % share)
     run(["/usr/bin/net", "conf", "addshare", share, path])
 
-    # Groups need the "@" prefix, the administrator must not have one.
-    valid_users = ["@" + group for group in groups]
+    # Samba splits list parameters on whitespace as well as commas, so an
+    # unquoted "Domain Admins" would become the two meaningless entries
+    # "Domain" and "Admins" - and every login would be refused with nothing
+    # in the log below level 10. Every entry therefore gets quoted.
+    #
+    # Domain Admins are always included: without them the smbcacls call that
+    # seeds the ACL cannot even connect, and nobody could open the share in
+    # Windows to set permissions in the first place.
+    entries = ['@%s\\Domain Admins' % workgroup]
+    entries += ["@" + group for group in groups]
     if admin_user:
-        valid_users.append(admin_user)
+        entries.append(admin_user)
+    valid_users = ['"%s"' % entry for entry in entries]
 
     parameters = [
         ("comment", "Verwaltung"),
         ("path", path),
         ("read only", "no"),
         ("browseable", "yes"),
-        # Access-based enumeration: users only see what their NT ACL grants.
+        # Users only see the objects their NT ACL actually grants them.
+        # (Note: "access based share enum" would NOT do this - it evaluates
+        # the share ACL from share_info.tdb, not the security descriptors on
+        # the files, so it is deliberately not set here.)
         ("hide unreadable", "yes"),
-        ("access based share enum", "yes"),
         # A second gate in front of the NT ACL. Share-level and NT-level
         # permissions are independent; the more restrictive one wins.
         ("valid users", ", ".join(valid_users)),
@@ -491,13 +568,21 @@ def configure_share(share, path, groups, admin_user):
         # instead of deriving open permissions from the mode bits.
         ("acl_xattr:default acl style", "windows"),
     ]
-    if admin_user:
-        parameters.append(("admin users", admin_user))
-
     for key, value in parameters:
-        if value == "":
-            continue
         run(["/usr/bin/net", "conf", "setparm", share, key, value], check=True)
+
+    # "admin users" bypasses every permission on the share, so a second run
+    # without --admin-user has to actively remove it. net conf never drops a
+    # parameter on its own, and leaving that one behind would silently keep a
+    # full bypass in place.
+    if admin_user:
+        run(
+            ["/usr/bin/net", "conf", "setparm", share, "admin users",
+             '"%s"' % admin_user],
+            check=True,
+        )
+    else:
+        run(["/usr/bin/net", "conf", "delparm", share, "admin users"])
     good()
 
 
@@ -555,15 +640,46 @@ def grant_disk_operator(workgroup, group, auth):
     return True
 
 
-def create_folders(path, folders):
+FOLDER_FORBIDDEN = set('<>:"/\\|?*')
+
+
+def create_folders(share, folders, auth):
+    """
+    Create the subfolders through SMB instead of on the filesystem.
+
+    A directory made with os.makedirs has no NT ACL at all, and with
+    "acl_xattr:default acl style = windows" Samba then exposes owner and
+    SYSTEM only - the owner being root, which is no domain account. On top of
+    that it keeps the local mode root:root 0755, because Samba's forced
+    create/directory masks only apply to objects created over SMB. Such a
+    folder is invisible (hide unreadable) and unwritable for everyone.
+
+    Creating it through SMB lets Samba apply inheritance from the share root
+    exactly the way Windows would. sophomorix uses the same trick.
+    """
     if not folders:
         return
     step("Lege %d Unterordner an" % len(folders))
     for folder in folders:
-        # Reject traversal so a typo cannot create directories outside the share.
-        if os.path.isabs(folder) or ".." in folder.replace("\\", "/").split("/"):
-            raise SetupError("Unzulaessiger Ordnername: %s" % folder)
-        os.makedirs(os.path.join(path, folder), exist_ok=True)
+        bad = sorted(FOLDER_FORBIDDEN & set(folder))
+        if bad or folder in (".", "..") or not folder.strip():
+            raise SetupError(
+                "Unzulaessiger Ordnername '%s'. Nicht erlaubt: %s"
+                % (folder, " ".join(bad) or "(leer bzw. . und ..)")
+            )
+        result = run(
+            ["/usr/bin/smbclient", "//localhost/%s" % share]
+            + auth.args
+            + ["-c", 'mkdir "%s"' % folder]
+        )
+        # An existing directory is reported as an error; that is fine here.
+        if (
+            result.returncode != 0
+            and "NT_STATUS_OBJECT_NAME_COLLISION" not in out(result)
+        ):
+            raise SetupError(
+                "Kann den Ordner '%s' nicht anlegen:\n%s" % (folder, out(result))
+            )
     good()
 
 
@@ -591,13 +707,31 @@ def cmd_setup(args):
     else:
         warn("(NTP nicht synchron - Kerberos scheitert dann)")
 
+    validate_share_name(args.share)
     configure(domain, workgroup, hostname)
 
     # Only meaningful once smb.conf names the realm, so this runs after
     # configure() and before the join it is meant to protect.
     step("Suche einen Domaenencontroller")
-    check_domain_controller()
-    good()
+    netbios_domain = check_domain_controller()
+    good("(NetBIOS-Domaene: %s)" % netbios_domain if netbios_domain else "")
+
+    # The NetBIOS domain name does not have to be the first label of the DNS
+    # name. If it differs, everything derived from the guess is wrong at once:
+    # "workgroup", the "idmap config <WG>" section - which would leave every
+    # domain account in the tdb fallback range instead of the rid range - and
+    # the username map. Rewrite the configuration with the authoritative value.
+    if netbios_domain and netbios_domain.upper() != workgroup:
+        print()
+        print(
+            YELLOW
+            + "Die NetBIOS-Domaene lautet '%s', nicht '%s' wie aus dem "
+            "DNS-Namen abgeleitet.\nDie Konfiguration wird damit neu "
+            "geschrieben." % (netbios_domain.upper(), workgroup)
+            + RESET
+        )
+        workgroup = netbios_domain.upper()
+        configure(domain, workgroup, hostname)
 
     with AuthFile(args.username, password, workgroup) as auth:
         join_domain(auth)
@@ -609,14 +743,18 @@ def cmd_setup(args):
         admin_user = "%s\\administrator" % workgroup if args.admin_user else None
 
         create_directory(args.path, workgroup)
-        configure_share(args.share, args.path, groups, admin_user)
-        create_folders(args.path, args.folder)
+        configure_share(args.share, args.path, workgroup, groups, admin_user)
 
         step("Lade Samba-Konfiguration neu")
-        run(["/usr/bin/smbcontrol", "all", "reload-config"])
+        run(["/usr/bin/smbcontrol", "all", "reload-config"], check=True)
         good()
 
-        seeded = seed_acl(args.share, workgroup, groups, auth) if groups else False
+        # Always seed, even without -g. Without an NT ACL the share root would
+        # fall back to "owner and SYSTEM only" - and the owner is root, which
+        # is no domain account, so not even Domain Admins could get in.
+        seeded = seed_acl(args.share, workgroup, groups, auth)
+        # Only now: the folders inherit the ACL that was just written.
+        create_folders(args.share, args.folder, auth)
         granted = grant_disk_operator(workgroup, args.rights_group, auth)
 
     step("Schreibe %s" % CONFIG_PATH)
@@ -636,9 +774,20 @@ def cmd_setup(args):
     if not groups:
         print(
             YELLOW
-            + "Es wurde keine Zugriffsgruppe angegeben (-g). Damit kommt ausser\n"
-            "den Domaenen-Admins niemand auf die Freigabe." + RESET
+            + "Es wurde keine Zugriffsgruppe angegeben (-g). Zugriff haben\n"
+            "damit ausschliesslich die Domaenen-Admins. Lege eine Gruppe an\n"
+            "und fuege sie unter Windows in die Rechte ein, oder wiederhole\n"
+            "das Setup mit -g." + RESET
         )
+        print()
+    if not seeded:
+        print(
+            YELLOW
+            + "Die Start-ACL konnte nicht gesetzt werden. Bis das nachgeholt\n"
+            "ist, hat die Freigabewurzel keine gueltige NT-ACL und niemand\n"
+            "kommt hinein. Erneut versuchen mit:" + RESET
+        )
+        print("  linuxmuster-fileserver-verwaltung repair-acls --force")
         print()
     if not granted:
         print(YELLOW + "SeDiskOperatorPrivilege wurde nicht erteilt. Manuell:" + RESET)
@@ -653,6 +802,7 @@ def cmd_setup(args):
     print("  -> Eigenschaften -> Sicherheit -> Erweitert")
     if seeded:
         print("Eine restriktive Start-ACL ist bereits gesetzt.")
+    print("Details: /usr/share/doc/linuxmuster-fileserver-verwaltung")
 
 
 def cmd_status(args):
@@ -706,13 +856,14 @@ def cmd_status(args):
             ok = False
 
     step("Freigabe [%s] konfiguriert" % args.share)
-    if args.share in out(run(["/usr/bin/net", "conf", "listshares"])).split():
+    shares = stdout_of(run(["/usr/bin/net", "conf", "listshares"])).splitlines()
+    if args.share in [line.strip() for line in shares]:
         good()
     else:
         bad()
         ok = False
 
-    path = out(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
+    path = stdout_of(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
     if path and os.path.isdir(path):
         step("NT-ACL auf %s vorhanden" % path)
         result = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
@@ -753,7 +904,7 @@ def cmd_status(args):
 
 def cmd_show(args):
     check_root()
-    path = out(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
+    path = stdout_of(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
     if not path or not os.path.isdir(path):
         sys.exit("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)
 
@@ -833,6 +984,11 @@ def cmd_repair_acls(args):
 def cmd_save_acl(args):
     check_root()
     password = args.password or getpass("Passwort fuer %s: " % args.username)
+    # Create the file with tight permissions up front: smbcacls would create
+    # it with the umask default, leaving the whole permission layout of the
+    # administration share world readable until the chmod lands.
+    os.close(os.open(args.file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o0600))
+    os.chmod(args.file, 0o0600)
     with AuthFile(args.username, password, get_workgroup()) as auth:
         result = run(
             ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"]
@@ -841,7 +997,6 @@ def cmd_save_acl(args):
         )
     if result.returncode != 0:
         sys.exit(out(result))
-    os.chmod(args.file, 0o0600)
     print("Rechte gesichert nach %s" % args.file)
 
 
@@ -870,7 +1025,12 @@ def main():
     setup_parser = subparsers.add_parser("setup", help="Server einrichten")
     setup_parser.add_argument("-d", "--domain", default="linuxmuster.lan")
     setup_parser.add_argument("-u", "--username", default="global-admin")
-    setup_parser.add_argument("-p", "--password", help="sonst interaktive Abfrage")
+    setup_parser.add_argument(
+        "-p",
+        "--password",
+        help="sonst interaktive Abfrage. Achtung: als Argument steht das "
+        "Passwort in der Prozessliste und in der Shell-History",
+    )
     setup_parser.add_argument("-s", "--share", default="Verwaltung")
     setup_parser.add_argument("--path", default="/srv/samba/verwaltung")
     setup_parser.add_argument(
@@ -943,6 +1103,22 @@ def main():
     except SetupError as error:
         print()
         sys.exit(RED + str(error) + RESET)
+    except KeyboardInterrupt:
+        sys.exit("\nAbgebrochen.")
+    except FileNotFoundError as error:
+        # A missing Samba binary should read as a missing dependency, not as a
+        # traceback.
+        print()
+        sys.exit(RED + "Programm nicht gefunden: %s" % error + RESET)
+    except (OSError, IndexError, KeyError, configparser.Error) as error:
+        print()
+        sys.exit(
+            RED
+            + "Unerwarteter Fehler: %s: %s\n"
+            "Falls %s von Hand bearbeitet wurde, pruefe die Datei."
+            % (type(error).__name__, error, CONFIG_PATH)
+            + RESET
+        )
 
 
 if __name__ == "__main__":

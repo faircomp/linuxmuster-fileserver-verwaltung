@@ -177,7 +177,7 @@ apt update
 Das `.deb` aus den GitHub-Releases holen und installieren:
 
 ```bash
-apt install ./linuxmuster-fileserver-verwaltung_7.3.0-0_all.deb
+apt install ./linuxmuster-fileserver-verwaltung_7.3.0_all.deb
 ```
 
 Bei der Kerberos-Abfrage des Installers **den Realm leer lassen** — `setup`

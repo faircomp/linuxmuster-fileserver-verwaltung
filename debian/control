@@ -22,7 +22,6 @@ Depends: ${misc:Depends},
          chrony | ntpsec | systemd-timesyncd,
          acl,
          attr
-Recommends: quota
 Homepage: https://github.com/faircomp/linuxmuster-fileserver-verwaltung
 Description: Dedicated administration fileserver for linuxmuster.net 7.3
  Joins a dedicated Ubuntu 24.04 server to the Samba Active Directory of a
