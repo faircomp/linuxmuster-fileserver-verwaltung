@@ -82,9 +82,22 @@ Nicht-SMB-Zugriffspfad umginge die Rechte vollständig. Deshalb:
 - kein NFS-Export, kein FTP, kein Webserver auf diesem Verzeichnis
 - lokale Konten auf diesem Server auf das Nötigste beschränken
 
-Die Freigabewurzel selbst ist die Ausnahme: Sie gehört `root:<DOM>\domain users`
-mit Modus `0770`, weil der Kernel die Traversierung weiterhin durchsetzt. So
-kommt kein Nicht-AD-Konto überhaupt hinein.
+Die Freigabewurzel selbst ist die Ausnahme, und zwar in beide Richtungen. Der
+Kernel prüft den POSIX-Modus bei **jedem** Pfadbestandteil, egal was Samba
+denkt — die NT-ACL wird erst danach gefragt. Deshalb gilt dort:
+
+- **Gruppe `<DOM>\domain users`, Modus `0770`.** Wäre die Gruppe enger gesetzt,
+  scheiterte jeder gewöhnliche Benutzer schon an `chdir()`, und die Freigabe
+  funktionierte nur für Administratoren. Umgekehrt hält `0770` alle Konten
+  draußen, die nicht in der Domäne sind.
+- **Besitzer ist ein Domänenkonto**, nämlich das aus `--username`. Vor der
+  ersten NT-ACL leitet Samba die Rechte aus Besitzer und SYSTEM ab; mit `root`
+  als Besitzer wäre das `S-1-22-1-0`, eine lokale SID, die kein Domänenkonto
+  besitzt — die allererste ACL ließe sich dann nie setzen.
+
+`setup` stellt beides auch **nach** dem Setzen der Start-ACL wieder her, weil
+`smbcacls --set` Besitzer und Gruppe des Deskriptors bis auf die POSIX-Ebene
+durchschreibt.
 
 ### 2.3 Freigabe in der Samba-Registry
 
