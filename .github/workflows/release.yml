@@ -52,6 +52,33 @@ jobs:
           linuxmuster-fileserver-verwaltung --help
           linuxmuster-fileserver-verwaltung setup --help
 
+      - name: Pure functions must actually run
+        # "--help" exits through argparse and touches almost no code, so it
+        # happily passes even when a constant went missing in a refactor and
+        # every real invocation dies with a NameError. Import the module and
+        # call the functions that need no root and no domain.
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from importlib.machinery import SourceFileLoader
+
+          loader = SourceFileLoader("lmv", "/usr/bin/linuxmuster-fileserver-verwaltung")
+          spec = importlib.util.spec_from_loader("lmv", loader)
+          module = importlib.util.module_from_spec(spec)
+          loader.exec_module(module)
+
+          module.validate_share_name("Verwaltung")
+          for name in ("Ver/waltung", "a:b", ""):
+              try:
+                  module.validate_share_name(name)
+              except module.SetupError:
+                  continue
+              raise SystemExit("invalid share name accepted: %r" % name)
+
+          module.check_time_sync()
+          print("pure functions OK")
+          PY
+
       - name: The templates must be installed
         run: |
           for template in smb.conf krb5.conf nsswitch.conf; do

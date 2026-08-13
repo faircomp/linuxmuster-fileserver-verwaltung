@@ -630,6 +630,9 @@ def set_root_posix(path, workgroup, username):
     good()
 
 
+SHARE_NAME_FORBIDDEN = set('%<>*?|/\\+=;:",')
+
+
 def validate_share_name(share):
     """
     Reject share names that Samba considers invalid.
