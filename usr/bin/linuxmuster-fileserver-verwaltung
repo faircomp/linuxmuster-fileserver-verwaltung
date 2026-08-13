@@ -592,6 +592,30 @@ def create_directory(path, workgroup, username):
     # "smbcacls --set" fails with NT_STATUS_ACCESS_DENIED. Making the account
     # that seeds the ACL the owner breaks that chicken-and-egg. Once the NT
     # ACL is stored, the POSIX owner no longer decides anything.
+    set_root_posix(path, workgroup, username)
+
+
+def set_root_posix(path, workgroup, username):
+    """
+    Give the share root a POSIX owner, group and mode that let the NT ACL do
+    its job.
+
+    Two separate reasons, both learned the hard way:
+
+    * The owner must be a DOMAIN account. Before any NT ACL exists, Samba
+      synthesizes one granting the owner and SYSTEM only; with root as owner
+      that is S-1-22-1-0, a local SID no domain account holds, so the first
+      "smbcacls --set" fails with NT_STATUS_ACCESS_DENIED.
+    * The group must be Domain Users. The kernel enforces the mode on every
+      path component no matter what Samba thinks, so a share root that is
+      only group-readable by Domain Admins denies every ordinary user at
+      chdir() time - before the NT ACL is ever consulted. The share would
+      appear to work for administrators and be dead for everyone else.
+
+    Mode 0770 keeps accounts that are not in the domain out entirely, which
+    matters because "acl_xattr:ignore system acls = yes" makes the POSIX layer
+    inside the share meaningless.
+    """
     step("Setze Basisrechte auf %s" % path)
     owner = "%s\\%s" % (workgroup, username)
     group = "%s\\domain users" % workgroup
@@ -604,9 +628,6 @@ def create_directory(path, workgroup, username):
         )
     os.chmod(path, 0o0770)
     good()
-
-
-SHARE_NAME_FORBIDDEN = set('%<>*?|/\\+=;:",')
 
 
 def validate_share_name(share):
@@ -856,6 +877,13 @@ def cmd_setup(args):
         # fall back to "owner and SYSTEM only" - and the owner is root, which
         # is no domain account, so not even Domain Admins could get in.
         seeded = seed_acl(args.share, workgroup, groups, auth)
+        if seeded:
+            # "smbcacls --set" writes the descriptor's OWNER and GROUP through
+            # to the POSIX layer, which just turned the share root into
+            # domain admins:domain admins. Left alone, the kernel would deny
+            # every non-administrator at chdir() before the NT ACL is even
+            # looked at.
+            set_root_posix(args.path, workgroup, args.username)
         # Only now: the folders inherit the ACL that was just written.
         create_folders(args.share, args.folder, auth)
         granted = grant_disk_operator(workgroup, args.rights_group, auth)
@@ -1094,6 +1122,7 @@ def cmd_repair_acls(args):
             share, workgroup, groups, auth, label="Setze Basis-ACL neu"
         ):
             raise SetupError("Die Basis-ACL konnte nicht gesetzt werden.")
+        set_root_posix(parser["share"]["path"], workgroup, args.username)
 
     resolved = [resolve_group(workgroup, g.split("\\", 1)[-1]) for g in groups]
     save_config(
