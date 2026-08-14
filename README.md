@@ -179,8 +179,10 @@ linuxmuster-import-devices
 > (`sophomorix-device`: *„host is not in file anymore" → `push_kill_computer`*).
 > Ein nur per `net ads join` beigetretener Fileserver verliert sein Konto beim
 > nächsten Importlauf. Auffällig wird das erst beim nächsten
-> winbind-Reconnect — laufende Sitzungen überleben die Löschung eine Weile und
-> täuschen Betrieb vor.
+> winbind-Reconnect: In einem Parallelprojekt an derselben Domäne liefen nach
+> der Kontolöschung noch **über 24 Stunden** erfolgreiche Anmeldungen.
+> „Es funktioniert doch" beweist hier also nichts — nur `net ads testjoin`
+> bzw. `status` tut es.
 
 ### 4.2 Paketquelle und Installation
 

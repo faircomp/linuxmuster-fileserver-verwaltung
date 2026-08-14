@@ -172,9 +172,20 @@ Computerkonto entsteht — nicht das erste Feld, das ebenfalls `server` lautet.
 >
 > Ein Fileserver, der nur per `net ads join` in die Domäne kam, verliert sein
 > Konto beim nächsten Import — irgendwann, wenn jemand ein Gerät hinzufügt.
-> Die Freigabe stirbt dann nicht sofort: Laufende Sitzungen bestehen weiter
-> und täuschen Betrieb vor, bis winbind neu verbindet. Danach kommt niemand
-> mehr rein.
+>
+> **Die Freigabe stirbt dabei nicht sofort, und das ist die eigentliche
+> Gefahr.** Bestehende winbind-Kanäle laufen weiter, als wäre nichts. In einem
+> Parallelprojekt an derselben Domäne wurden nach der Kontolöschung noch
+> **über 24 Stunden** erfolgreiche Anmeldungen beobachtet. „Es funktioniert
+> doch" ist also **kein** Beleg dafür, dass das Konto noch existiert — erst der
+> nächste Reconnect oder Neustart bringt es ans Licht, und dann kommt niemand
+> mehr hinein.
+>
+> Verlässlich ist nur die direkte Prüfung:
+>
+> ```bash
+> net ads testjoin      # muss "Join is OK" sagen
+> ```
 >
 > `linuxmuster-fileserver-verwaltung status` erkennt das (`net ads testjoin`
 > schlägt fehl, Exit-Code 1) — ein guter Grund für den Cron-Job aus Schritt 10.
