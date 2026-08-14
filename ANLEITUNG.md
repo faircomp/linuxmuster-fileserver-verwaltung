@@ -157,6 +157,31 @@ Die Rolle `server` steht in **Feld 9**, Feld 3 ist die Hardwareklasse
 (`nopxe`); die Zeile endet mit einem Semikolon. Nur Feld 9 entscheidet, ob ein
 Computerkonto entsteht — nicht das erste Feld, das ebenfalls `server` lautet.
 
+> ⛔ **Dieser Schritt ist nicht optional, und der Eintrag muss dauerhaft
+> drinbleiben.** `linuxmuster-import-devices` ruft `sophomorix-device --sync`
+> auf, und das löscht **jedes** Rechnerkonto im AD, das in keiner
+> `devices.csv` steht:
+>
+> ```perl
+> foreach my $device (keys %{$ref_AD_device->{'computer'}}) {
+>     if (not exists $devices_file{'computer'}{$device}){
+>         &push_kill_computer($device);   # host is not in file anymore
+>     }
+> }
+> ```
+>
+> Ein Fileserver, der nur per `net ads join` in die Domäne kam, verliert sein
+> Konto beim nächsten Import — irgendwann, wenn jemand ein Gerät hinzufügt.
+> Die Freigabe stirbt dann nicht sofort: Laufende Sitzungen bestehen weiter
+> und täuschen Betrieb vor, bis winbind neu verbindet. Danach kommt niemand
+> mehr rein.
+>
+> `linuxmuster-fileserver-verwaltung status` erkennt das (`net ads testjoin`
+> schlägt fehl, Exit-Code 1) — ein guter Grund für den Cron-Job aus Schritt 10.
+> Heilung: Zeile in `devices.csv` ergänzen, importieren, dann auf dem
+> Fileserver `setup` erneut laufen lassen (es erkennt den fehlenden Join und
+> tritt neu bei).
+
 ```bash
 linuxmuster-import-devices
 ```

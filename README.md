@@ -173,6 +173,15 @@ linuxmuster-import-devices
 > `linuxmuster-import-devices` verarbeitet immer die **gesamte** `devices.csv`.
 > Bewusst ausführen.
 
+> ⛔ **Der Eintrag ist Pflicht und muss dauerhaft bestehen bleiben.** Der
+> Import ruft `sophomorix-device --sync` auf, und das löscht jedes
+> Rechnerkonto im AD, zu dem keine Zeile in einer `devices.csv` existiert
+> (`sophomorix-device`: *„host is not in file anymore" → `push_kill_computer`*).
+> Ein nur per `net ads join` beigetretener Fileserver verliert sein Konto beim
+> nächsten Importlauf. Auffällig wird das erst beim nächsten
+> winbind-Reconnect — laufende Sitzungen überleben die Löschung eine Weile und
+> täuschen Betrieb vor.
+
 ### 4.2 Paketquelle und Installation
 
 ```bash
@@ -448,6 +457,7 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 | Rechte nach Restore weg | Backup ohne xattrs (siehe 7.) |
 | Benutzer sieht Ordner nicht | `hide unreadable = yes` — gewollt: keine ACL, kein Ordner |
 | Alle ausgesperrt, Gruppe existiert aber | Gruppe wurde gelöscht und neu angelegt → neue SID (siehe 5.) |
+| Zugriff bricht plötzlich weg, `net ads testjoin` schlägt fehl | Rechnerkonto vom `linuxmuster-import-devices` entfernt, weil der Server nicht in der `devices.csv` steht (siehe 4.1) |
 
 ```bash
 linuxmuster-fileserver-verwaltung status       # Dienste, Join, DC, Freigabe, Gruppen-SIDs
