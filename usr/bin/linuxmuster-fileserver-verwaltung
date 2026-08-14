@@ -1054,18 +1054,26 @@ def cmd_show(args):
     print(out(run(["/usr/bin/getfacl", "-p", path])))
     print()
     print("--- NT-ACL der Freigabewurzel ---")
-    # samba-tool decodes the descriptor; getfattr would only print the raw
-    # base64 blob, which tells nobody anything.
-    decoded = run(["/usr/bin/samba-tool", "ntacl", "get", "--as-sddl", path])
-    if decoded.returncode == 0 and stdout_of(decoded):
-        print(stdout_of(decoded))
+    # Deliberately not "samba-tool ntacl get": on a domain member it does not
+    # read the stored security.NTACL at all, it synthesizes a descriptor from
+    # the POSIX bits and prints that. The result looks plausible and is wrong,
+    # which is worse than no output. Verified against a live member server.
+    # smbcacls goes through smbd and therefore shows what actually applies.
+    present = "security.NTACL" in out(
+        run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
+    )
+    if not present:
+        print("(kein NT-ACL gesetzt)")
+    elif args.username:
+        password = resolve_password(args, "Passwort fuer %s: " % args.username)
+        with AuthFile(args.username, password, get_workgroup()) as auth:
+            result = run(
+                ["/usr/bin/smbcacls", "//localhost/%s" % args.share, "/"] + auth.args
+            )
+        print(stdout_of(result) if result.returncode == 0 else out(result))
     else:
-        present = run(["/usr/bin/getfattr", "-m", "security.NTACL", "-d", path])
-        if "security.NTACL" in out(present):
-            print("gesetzt (nicht dekodierbar auf diesem System)")
-            print("Lesbar anzeigen:  smbcacls //localhost/%s / -U <admin>" % args.share)
-        else:
-            print("(kein NT-ACL gesetzt)")
+        print("gesetzt. Zum Anzeigen Zugangsdaten mitgeben:")
+        print("  linuxmuster-fileserver-verwaltung show -u <admin>")
 
     count = run(
         [
@@ -1273,6 +1281,11 @@ def main():
 
     show_parser = subparsers.add_parser("show", help="Freigabe und Rechte anzeigen")
     show_parser.add_argument("-s", "--share", default="Verwaltung")
+    show_parser.add_argument(
+        "-u", "--username", help="Zugangsdaten, um die NT-ACL lesbar anzuzeigen"
+    )
+    show_parser.add_argument("-p", "--password")
+    show_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
 
     repair_parser = subparsers.add_parser(
         "repair-acls", help="Basis-ACL nach Gruppenwechsel erneuern"
