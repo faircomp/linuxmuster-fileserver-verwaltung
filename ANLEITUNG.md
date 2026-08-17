@@ -190,8 +190,10 @@ Computerkonto entsteht — nicht das erste Feld, das ebenfalls `server` lautet.
 > `linuxmuster-fileserver-verwaltung status` erkennt das (`net ads testjoin`
 > schlägt fehl, Exit-Code 1) — ein guter Grund für den Cron-Job aus Schritt 10.
 > Heilung: Zeile in `devices.csv` ergänzen, importieren, dann auf dem
-> Fileserver `setup` erneut laufen lassen (es erkennt den fehlenden Join und
-> tritt neu bei).
+> Fileserver `setup` erneut laufen lassen. Ohne `-g` übernimmt es die in
+> `share.conf` gespeicherten Zugriffsgruppen automatisch und meldet das;
+> `--folder` und ein abweichender `--path`/`--share` müssen dagegen wie beim
+> ersten Mal angegeben werden.
 
 ```bash
 linuxmuster-import-devices
@@ -246,11 +248,13 @@ linuxmuster-fileserver-verwaltung setup \
 Das Passwort wird abgefragt. Die Ausgabe hakt jeden Schritt ab; beim ersten
 Fehler bricht es mit einer Erklärung ab, statt halb fertig weiterzulaufen.
 
-Was passiert: Vorabprüfungen (Hostname, DNS, DC erreichbar, Zeit) →
-Konfigurationsdateien schreiben → `net ads join` → Dienste starten → Gruppe
-auflösen → Verzeichnis anlegen → Freigabe in der Samba-Registry → restriktive
-Start-ACL → `SeDiskOperatorPrivilege` → Konfiguration mit den Gruppen-SIDs
-sichern.
+Was passiert: Vorabprüfungen (Argumente, Hostname, DNS, Zeit) →
+Konfigurationsdateien schreiben → **dann** DC-Suche (sie braucht den Realm aus
+der frischen `smb.conf`; scheitert sie, sind die Dateien schon ersetzt, die
+Originale liegen als `*.lmn-orig` daneben) → `net ads join` → Dienste starten
+→ Gruppe auflösen → Verzeichnis anlegen → Freigabe in der Samba-Registry →
+restriktive Start-ACL → Unterordner → `SeDiskOperatorPrivilege` →
+Konfiguration mit den Gruppen-SIDs sichern.
 
 ## Schritt 8 — Prüfen
 

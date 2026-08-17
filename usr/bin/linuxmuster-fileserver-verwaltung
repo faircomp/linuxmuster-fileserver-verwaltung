@@ -123,7 +123,15 @@ def resolve_password(args, prompt):
         return password
     if args.password:
         return args.password
-    return getpass(prompt)
+    try:
+        return getpass(prompt)
+    except EOFError:
+        # No terminal (cron, CI, piped stdin): fail with an instruction
+        # instead of a traceback.
+        raise SetupError(
+            "Keine interaktive Passworteingabe moeglich. In Skripten "
+            "--password-file verwenden."
+        )
 
 
 class AuthFile:
@@ -765,7 +773,25 @@ def grant_disk_operator(workgroup, group, auth):
     return True
 
 
-FOLDER_FORBIDDEN = set('<>:"/\\|?*')
+# ";" is forbidden although Windows would allow it: the name is embedded in
+# an smbclient -c command string, and smbclient splits that string on ";"
+# without honouring quotes. Control characters are rejected for the same
+# reason (a newline would end the command line).
+FOLDER_FORBIDDEN = set('<>:"/\\|?*;')
+
+
+def validate_folder_name(folder):
+    bad = sorted(FOLDER_FORBIDDEN & set(folder))
+    if (
+        bad
+        or folder in (".", "..")
+        or not folder.strip()
+        or any(ord(c) < 32 for c in folder)
+    ):
+        raise SetupError(
+            "Unzulaessiger Ordnername '%s'. Nicht erlaubt: %s"
+            % (folder, " ".join(bad) or "(leer, Steuerzeichen, . und ..)")
+        )
 
 
 def create_folders(share, folders, auth):
@@ -786,22 +812,21 @@ def create_folders(share, folders, auth):
         return
     step("Lege %d Unterordner an" % len(folders))
     for folder in folders:
-        bad = sorted(FOLDER_FORBIDDEN & set(folder))
-        if bad or folder in (".", "..") or not folder.strip():
-            raise SetupError(
-                "Unzulaessiger Ordnername '%s'. Nicht erlaubt: %s"
-                % (folder, " ".join(bad) or "(leer bzw. . und ..)")
-            )
+        validate_folder_name(folder)
         result = run(
             ["/usr/bin/smbclient", "//localhost/%s" % share]
             + auth.args
             + ["-c", 'mkdir "%s"' % folder]
         )
-        # An existing directory is reported as an error; that is fine here.
-        if (
-            result.returncode != 0
-            and "NT_STATUS_OBJECT_NAME_COLLISION" not in out(result)
-        ):
+        # smbclient's exit code is useless here: cmd_mkdir returns 0 even
+        # when the directory could not be created. Judge by the output
+        # instead - any NT_STATUS line except "already exists" is a failure.
+        errors = [
+            line
+            for line in out(result).splitlines()
+            if "NT_STATUS" in line and "NT_STATUS_OBJECT_NAME_COLLISION" not in line
+        ]
+        if result.returncode != 0 or errors:
             raise SetupError(
                 "Kann den Ordner '%s' nicht anlegen:\n%s" % (folder, out(result))
             )
@@ -817,6 +842,42 @@ def cmd_setup(args):
     check_root()
     # Before the password prompt and before the first write.
     check_not_the_school_server()
+
+    # Every argument that can only fail is validated here, before the
+    # password prompt and long before the join. A bad --folder or --path that
+    # only surfaced after the domain join would leave a half-configured
+    # machine behind.
+    validate_share_name(args.share)
+    for folder in args.folder:
+        validate_folder_name(folder)
+    if not os.path.isabs(args.path):
+        raise SetupError(
+            "--path muss ein absoluter Pfad sein, nicht '%s'.\n"
+            "Ein relativer Pfad landet woertlich in der Samba-Registry; smbd "
+            "loest ihn nie auf das vorbereitete Verzeichnis auf und die "
+            "Freigabe waere unbenutzbar." % args.path
+        )
+
+    # A repeated run (e.g. after linuxmuster-import-devices removed the
+    # machine account) usually comes without -g. Silently continuing with an
+    # empty group list would rewrite "valid users" and the baseline ACL
+    # without the access group and disable the SID watch - so reuse what the
+    # previous run recorded.
+    if not args.group and os.path.exists(CONFIG_PATH):
+        try:
+            stored = [
+                name.split("\\", 1)[-1] for name in load_config()["groups"]
+            ]
+        except (SetupError, KeyError, configparser.Error):
+            stored = []
+        if stored:
+            args.group = stored
+            print()
+            print(
+                "Keine Gruppe angegeben - uebernehme die gespeicherten "
+                "Zugriffsgruppen: %s" % ", ".join(stored)
+            )
+            print("(Andere Gruppen? Einfach -g explizit angeben.)")
 
     domain = args.domain.upper()
     workgroup = domain.split(".")[0]
@@ -834,7 +895,6 @@ def cmd_setup(args):
     else:
         warn("(NTP nicht synchron - Kerberos scheitert dann)")
 
-    validate_share_name(args.share)
     configure(domain, workgroup, hostname)
 
     # Only meaningful once smb.conf names the realm, so this runs after
@@ -1019,7 +1079,10 @@ def cmd_status(args):
     except SetupError:
         parser = None
 
-    if parser and parser.has_section("groups"):
+    if parser and parser.has_section("groups") and not parser["groups"]:
+        step("Zugriffsgruppen")
+        warn("(keine Gruppe hinterlegt - lief setup ohne -g? SID-Wache inaktiv)")
+    elif parser and parser.has_section("groups"):
         step("Zugriffsgruppen unveraendert")
         problems = check_group_sids(parser)
         if problems:
@@ -1154,16 +1217,23 @@ def cmd_repair_acls(args):
 
 
 def share_path(args):
-    """Return the share path from the saved configuration or the registry."""
+    """
+    Return the share path for args.share.
+
+    The saved configuration is only trusted when it actually describes the
+    requested share - otherwise "-s SomethingElse" would be silently ignored
+    and the dump would contain the wrong tree.
+    """
     try:
-        return load_config()["share"]["path"]
+        config = load_config()
+        if config["share"]["name"] == args.share:
+            return config["share"]["path"]
     except (SetupError, KeyError):
-        path = stdout_of(
-            run(["/usr/bin/net", "conf", "getparm", args.share, "path"])
-        )
-        if not path or not os.path.isdir(path):
-            raise SetupError("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)
-        return path
+        pass
+    path = stdout_of(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
+    if not path or not os.path.isdir(path):
+        raise SetupError("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)
+    return path
 
 
 def cmd_save_acl(args):
@@ -1178,7 +1248,15 @@ def cmd_save_acl(args):
     check_root()
     path = share_path(args)
 
-    handle = os.open(args.file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o0600)
+    # Write to a temporary file next to the target and only rename it over
+    # the target after the dump has been validated. Opening the target with
+    # O_TRUNC directly would destroy the previous - possibly only - backup
+    # the moment the new one fails.
+    staging = args.file + ".neu"
+    try:
+        handle = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o0600)
+    except OSError as error:
+        raise SetupError("Kann %s nicht anlegen: %s" % (staging, error))
     try:
         result = subprocess.run(
             [
@@ -1198,19 +1276,27 @@ def cmd_save_acl(args):
     finally:
         os.close(handle)
 
-    if result.returncode != 0:
-        raise SetupError(
-            "Sicherung fehlgeschlagen:\n%s" % result.stderr.decode(errors="replace")
-        )
+    try:
+        if result.returncode != 0:
+            raise SetupError(
+                "Sicherung fehlgeschlagen:\n%s"
+                % result.stderr.decode(errors="replace")
+            )
 
-    with open(args.file) as dump:
-        objects = sum(1 for line in dump if line.startswith("# file:"))
-    if objects == 0:
-        raise SetupError(
-            "Es wurde kein einziges NT-ACL gefunden - die Sicherung waere leer.\n"
-            "Wurde unter %s schon jemals ein Recht gesetzt?" % path
-        )
+        with open(staging) as dump:
+            objects = sum(1 for line in dump if line.startswith("# file:"))
+        if objects == 0:
+            raise SetupError(
+                "Es wurde kein einziges NT-ACL gefunden - die Sicherung waere "
+                "leer.\nWurde unter %s schon jemals ein Recht gesetzt?\n"
+                "Eine bestehende Sicherung in %s bleibt unveraendert."
+                % (path, args.file)
+            )
+    except SetupError:
+        os.unlink(staging)
+        raise
 
+    os.replace(staging, args.file)
     print()
     print("%d Objekte gesichert nach %s" % (objects, args.file))
 

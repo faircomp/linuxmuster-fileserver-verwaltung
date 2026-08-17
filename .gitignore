@@ -17,3 +17,6 @@ debian/*.log
 # Python bytecode from local syntax checks
 __pycache__/
 *.pyc
+
+# crabbox failure captures - lokale Debug-Artefakte, niemals versionieren
+.crabbox/

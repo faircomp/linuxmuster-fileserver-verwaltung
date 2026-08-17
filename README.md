@@ -218,9 +218,13 @@ linuxmuster-fileserver-verwaltung setup \
 
 Was dabei passiert:
 
-1. Preflight: Hostname-Länge, DNS, Domänencontroller auffindbar, Zeitsync
+1. Preflight: Argumente (Share-/Ordnernamen, absoluter Pfad), Hostname-Länge,
+   DNS, Zeitsync
 2. `krb5.conf`, `nsswitch.conf`, `smb.conf` aus Vorlagen schreiben
-   (bestehende Dateien werden als `*.lmn-orig` gesichert), `testparm` prüfen
+   (bestehende Dateien werden als `*.lmn-orig` gesichert), `testparm` prüfen —
+   **danach** erst die Suche nach dem Domänencontroller, weil sie den Realm
+   aus der frischen `smb.conf` braucht. Scheitert sie, sind die drei Dateien
+   also bereits ersetzt (Originale liegen als `*.lmn-orig` daneben)
 3. `net ads join` und Keytab erzeugen
 4. `smbd`, `nmbd`, `winbind` starten
 5. Zugriffsgruppe auflösen — existiert sie nicht, bricht das Setup ab (eine
@@ -392,6 +396,7 @@ Zusätzlich sichern:
 | `/var/lib/samba/private/secrets.tdb` | Domänenbeitritt |
 | `/etc/krb5.keytab` | Kerberos-Keytab |
 | `/etc/samba/smb.conf` | Konfiguration |
+| `/etc/linuxmuster-fileserver-verwaltung/share.conf` | Gruppen-SIDs — ohne sie sind `status`-SID-Wache und `repair-acls` blind |
 
 `winbindd_idmap.tdb` ist entbehrlich — mit `rid` sind die IDs deterministisch.
 
@@ -404,8 +409,9 @@ linuxmuster-fileserver-verwaltung restore-acl -f /root/verwaltung-ntacl.dump
 
 Beides arbeitet auf der xattr-Ebene (`getfattr`/`setfattr`), nicht mit
 `smbcacls` — dessen `--save`/`--restore`/`--recurse` gibt es in der Samba-Version
-von Ubuntu 24.04 (4.19) schlicht nicht. `save-acl` bricht ab, statt eine leere
-Sicherung zu hinterlassen.
+von Ubuntu 24.04 (4.19) schlicht nicht. `save-acl` schreibt erst in eine
+temporäre Datei und benennt sie nur nach erfolgreicher Prüfung um — eine
+bestehende Sicherung wird also nie durch einen fehlgeschlagenen Lauf zerstört.
 
 **Nicht verwenden:** `cp` ohne `-a`, `scp`, GUI-Dateimanager, `unzip` — sie
 verlieren xattrs. Snapshots auf Block-Ebene und `zfs send|recv` sind unkritisch.
