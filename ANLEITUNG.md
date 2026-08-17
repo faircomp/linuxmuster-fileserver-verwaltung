@@ -210,17 +210,9 @@ samba-tool computer list | grep -i verwaltung01
 
 ## Schritt 6 — Paket installieren
 
-Zurück auf dem **Fileserver**:
-
-```bash
-wget -qO- "https://deb.linuxmuster.net/pub.gpg" \
-  | gpg --dearmour -o /usr/share/keyrings/linuxmuster.net.gpg
-
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxmuster.net.gpg] https://deb.linuxmuster.net/ lmn73 main" \
-  > /etc/apt/sources.list.d/lmn73.list
-
-apt update
-```
+Eine zusätzliche Paketquelle ist **nicht** nötig — sämtliche Abhängigkeiten
+(samba, winbind, acl, …) kommen aus Ubuntu 24.04 selbst; das ist in jedem
+Testlauf und im CI-Smoke-Test ohne Zusatzquelle verifiziert.
 
 Das `.deb` aus dem GitHub-Release holen. Das Repository ist privat, der
 Download braucht also ein angemeldetes `gh` — am einfachsten auf deinem
