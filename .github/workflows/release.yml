@@ -100,6 +100,10 @@ jobs:
     # is worse than not releasing at all.
     needs: [deb-package, smoke-test]
     if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    # The default GITHUB_TOKEN is read-only on this repo; creating the
+    # release needs an explicit grant, scoped to this job.
+    permissions:
+      contents: write
     name: GitHub Release
     runs-on: ubuntu-24.04
     steps:
