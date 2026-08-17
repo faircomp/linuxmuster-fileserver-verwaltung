@@ -194,6 +194,8 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxmuster.net.gpg] https:/
   > /etc/apt/sources.list.d/lmn73.list
 
 apt update
+# .deb aus dem GitHub-Release (privates Repo, Download via angemeldetem gh):
+#   gh release download v7.3.0 -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'
 apt install ./linuxmuster-fileserver-verwaltung_7.3.0_all.deb
 ```
 

@@ -222,10 +222,17 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxmuster.net.gpg] https:/
 apt update
 ```
 
-Das `.deb` aus den GitHub-Releases holen und installieren:
+Das `.deb` aus dem GitHub-Release holen. Das Repository ist privat, der
+Download braucht also ein angemeldetes `gh` — am einfachsten auf deinem
+Arbeitsrechner, dann per `scp` auf den Server:
 
 ```bash
-apt install ./linuxmuster-fileserver-verwaltung_7.3.0_all.deb
+# auf dem Arbeitsrechner
+gh release download v7.3.0 -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'
+scp linuxmuster-fileserver-verwaltung_7.3.0_all.deb root@10.0.0.3:/root/
+
+# auf dem Fileserver
+apt install /root/linuxmuster-fileserver-verwaltung_7.3.0_all.deb
 ```
 
 Bei der Kerberos-Abfrage des Installers **den Realm leer lassen** — `setup`
