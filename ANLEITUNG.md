@@ -214,9 +214,10 @@ Eine zusätzliche Paketquelle ist **nicht** nötig — sämtliche Abhängigkeite
 (samba, winbind, acl, …) kommen aus Ubuntu 24.04 selbst; das ist in jedem
 Testlauf und im CI-Smoke-Test ohne Zusatzquelle verifiziert.
 
-Das `.deb` aus dem GitHub-Release holen. Das Repository ist privat, der
-Download braucht also ein angemeldetes `gh` — am einfachsten auf deinem
-Arbeitsrechner, dann per `scp` auf den Server:
+Das `.deb` aus dem GitHub-Release holen. Das Repository ist öffentlich, `gh`
+funktioniert dafür auch ohne Anmeldung; alternativ die Datei von der
+Release-Seite laden. Am einfachsten auf deinem Arbeitsrechner, dann per `scp`
+auf den Server:
 
 ```bash
 # auf dem Arbeitsrechner

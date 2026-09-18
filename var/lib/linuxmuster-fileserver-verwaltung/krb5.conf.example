@@ -1,16 +1,29 @@
+# Kerberos client configuration for the linuxmuster.net administration
+# fileserver. `linuxmuster-fileserver-verwaltung setup` installs it as
+# /etc/krb5.conf and replaces %%DOMAIN%% with the AD realm in upper case.
+#
+# Only the realm is set explicitly. The KDCs are discovered through the SRV
+# records the linuxmuster.net server publishes (_kerberos._tcp.<realm>), so no
+# [realms] section is needed and the file stays valid when a further domain
+# controller is added.
+
 [libdefaults]
-        default_realm = %%DOMAIN%%
+    default_realm = %%DOMAIN%%
+    dns_lookup_kdc = true
+    dns_lookup_realm = false
 
-# The following krb5.conf variables are only for MIT Kerberos.
+    # winbind and smbd act towards the domain controller on behalf of the
+    # user, which needs forwardable (and proxiable) tickets.
+    forwardable = true
+    proxiable = true
 
-        dns_lookup_realm = false
-        dns_lookup_kdc = true
-        kdc_timesync = 1
-        ccache_type = 4
-        forwardable = true
-        proxiable = true
+    # Follow the KDC clock if the local clock drifts, and use the file-based
+    # credential cache format that Samba and the MIT tools both understand.
+    kdc_timesync = 1
+    ccache_type = 4
 
-# Reverse DNS is a frequent source of "Server not found in Kerberos database"
-# on networks where PTR records lag behind. Do not rely on it.
-        rdns = false
-        dns_canonicalize_hostname = false
+    # Never derive service principals from reverse DNS or canonicalised host
+    # names: stale PTR records are the usual cause of
+    # "Server not found in Kerberos database".
+    rdns = false
+    dns_canonicalize_hostname = false

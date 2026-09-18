@@ -1,3 +1,26 @@
+linuxmuster-fileserver-verwaltung (7.3.1) lmn73; urgency=medium
+
+  * Apply the faircomp package conventions (linuxmusterDEV
+    docs/paket-konventionen.md); no functional changes.
+  * Build with "make deb" as the uniform entry point (dpkg-buildpackage
+    -us -uc -tc); CI builds in the lmndev-runner container that also builds
+    the official linuxmuster.net packages, chosen by the changelog
+    distribution.
+  * Add ci.yml: on every push and pull request compile and lint the CLI,
+    build the package in the container and run the install smoke test on
+    Ubuntu 24.04 (previously only on tags).
+  * Align release.yml with the shared template: the tag must equal the
+    changelog version, build in the container, install smoke, GitHub
+    release with .deb and .changes, prerelease for -rc tags.
+  * Add CLAUDE.md with the working rules of this repository.
+  * Commit messages are English conventional commits (type(scope): subject)
+    from this version on; the history stays as it is.
+  * Settle the licensing note: configuration examples and debian/rules rewritten as
+    original work, LICENSE (GPL-3.0-or-later) added, debian/copyright without the
+    UNRESOLVED stanza; the repository is public, docs no longer call it private.
+
+ -- Kevin Stenzel <mail@kevin-stenzel.de>  Fri, 18 Sep 2026 10:00:00 +0200
+
 linuxmuster-fileserver-verwaltung (7.3.0) lmn73; urgency=low
 
   * Initial release, derived from linuxmuster-fileserver (Netzint GmbH)

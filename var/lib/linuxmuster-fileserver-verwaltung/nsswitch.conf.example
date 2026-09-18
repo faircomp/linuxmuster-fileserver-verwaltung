@@ -1,6 +1,8 @@
-# Name Service Switch configuration for a linuxmuster.net administration
-# fileserver. This is the Ubuntu 24.04 default with "winbind" added, so that
-# users and groups from the Active Directory are resolved on this machine.
+# Name Service Switch for the linuxmuster.net administration fileserver:
+# the Ubuntu 24.04 default (/etc/nsswitch.conf from base-files) with "winbind"
+# appended to passwd and group, so that domain users and groups resolve on this
+# host. `linuxmuster-fileserver-verwaltung setup` installs it as
+# /etc/nsswitch.conf.
 
 passwd:         files systemd winbind
 group:          files systemd winbind

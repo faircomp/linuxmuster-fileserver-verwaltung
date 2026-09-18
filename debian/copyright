@@ -1,30 +1,16 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: linuxmuster-fileserver-verwaltung
 Source: https://github.com/faircomp/linuxmuster-fileserver-verwaltung
+Comment:
+ The package serves the same environment as linuxmuster-fileserver by Netzint
+ GmbH (a Samba member server joined to a linuxmuster.net domain) and used that
+ package as the reference for the setup steps, but shares no code with it: the
+ CLI, the packaging and the configuration examples are original work.
+ nsswitch.conf.example is the Ubuntu 24.04 default with winbind added.
 
 Files: *
 Copyright: 2026 Kevin Stenzel <mail@kevin-stenzel.de>
 License: GPL-3.0-or-later
-
-Files: var/lib/linuxmuster-fileserver-verwaltung/krb5.conf.example
-       var/lib/linuxmuster-fileserver-verwaltung/nsswitch.conf.example
-       debian/rules
-       Makefile
-Comment:
- These files follow the corresponding files of the linuxmuster-fileserver
- package by Netzint GmbH closely enough to be considered derived from it.
- .
- IMPORTANT: the upstream repository
- https://github.com/linuxmuster/linuxmuster-fileserver ships no LICENSE file
- and states no license in debian/control, its README or any source file. The
- licensing status of the upstream work is therefore unresolved, and so is the
- status of the derived parts listed above.
- .
- Before distributing this package publicly, clarify the upstream license with
- Netzint GmbH (lukas.spitznagel@netzint.de) or replace these files with
- independent implementations. Until then, treat distribution as restricted.
-Copyright: 2025 Netzint GmbH
-License: UNRESOLVED
 
 License: GPL-3.0-or-later
  This program is free software: you can redistribute it and/or modify it
@@ -39,6 +25,3 @@ License: GPL-3.0-or-later
  .
  On Debian systems, the complete text of the GNU General Public License
  version 3 can be found in "/usr/share/common-licenses/GPL-3".
-
-License: UNRESOLVED
- No license statement is available for these files. See the comment above.
