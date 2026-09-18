@@ -1,47 +1,64 @@
 # SPDX-FileCopyrightText: Kevin Stenzel
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# From linuxmusterDEV/templates/release.yml, modeled on
-# lmndev-runner/workflows/*.release.yml: version and distribution come from the
-# first line of debian/changelog; the tag must match it. No publish job yet
-# (no faircomp/deb archive); add the upstream publish job when it exists.
-name: release
+# From linuxmusterDEV/templates/ci.yml. Three jobs on every push/PR: fast tier
+# (syntax, lint), package build in the same container upstream CI uses (proves
+# it builds on the target Ubuntu/Python), and the install smoke on
+# ubuntu-24.04 that release.yml repeats before every release.
+name: ci
 
 on:
   push:
-    tags: ['v[0-9]*']
-  workflow_dispatch:
+    branches: ['**']
+  pull_request:
 
 jobs:
-  gate:
+  fast:
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - id: meta
-        run: |
-          VERSION=$(dpkg-parsechangelog -S Version)
-          DIST=$(dpkg-parsechangelog -S Distribution); NUM="${DIST#lmn}"
-          TAGVER="${GITHUB_REF_NAME#v}"; TAGVER="${TAGVER//-rc/~rc}"   # v7.3.1-rc1 -> 7.3.1~rc1
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$TAGVER" != "$VERSION" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match debian/changelog version $VERSION"; exit 1; fi
-          if [ "${NUM:-0}" -ge 74 ] 2>/dev/null; then IMG=ghcr.io/linuxmuster/lmndev-runner:latest; else IMG=ghcr.io/linuxmuster/lmndev-runner:24.04; fi
-          echo "image=$IMG" >> "$GITHUB_OUTPUT"; echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"        # = Ubuntu 24.04 / lmn73
+      # >>> fast tier of this repo: one Python CLI without .py extension and no
+      # shell scripts, so there is nothing for shellcheck (pinned tool
+      # versions, Renovate bumps them) <<<
+      - run: pip install ruff==0.15.21
+      - name: Python syntax (py_compile)
+        run: python3 -m py_compile usr/bin/linuxmuster-fileserver-verwaltung
+      - name: ruff (default rule set = pyflakes + pycodestyle errors)
+        run: ruff check usr/bin/linuxmuster-fileserver-verwaltung
+      # <<<
 
-  build:
-    needs: gate
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      version: ${{ steps.image.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: image
+        run: |
+          DIST=$(dpkg-parsechangelog -S Distribution); NUM="${DIST#lmn}"
+          if [ "${NUM:-0}" -ge 74 ] 2>/dev/null; then IMG=ghcr.io/linuxmuster/lmndev-runner:latest; else IMG=ghcr.io/linuxmuster/lmndev-runner:24.04; fi
+          echo "image=$IMG" >> "$GITHUB_OUTPUT"
+          echo "version=$(dpkg-parsechangelog -S Version)" >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: resolve
     runs-on: ubuntu-latest
     container:
-      image: ${{ needs.gate.outputs.image }}
+      image: ${{ needs.resolve.outputs.image }}
       options: --user root
     steps:
       - uses: actions/checkout@v4
-      - run: |
+      - name: Build package (make deb wraps dpkg-buildpackage)
+        run: |
           apt-get update -qq && apt-get build-dep -y -qq . 2>/dev/null || true
           make deb
           mkdir -p output && mv ../*.deb ../*.changes ../*.buildinfo output/
+      - name: Lintian (advisory)
+        run: lintian output/*.deb || true
       - uses: actions/upload-artifact@v4
         with:
           name: packages
@@ -49,10 +66,10 @@ jobs:
           if-no-files-found: error
 
   install-smoke:
-    needs: build
-    # Same steps as in ci.yml: releasing a package that cannot be installed
-    # is worse than not releasing at all.
-    runs-on: ubuntu-24.04
+    needs: package
+    # Building a package that cannot be installed is the failure mode this
+    # job exists to catch; the build alone proves nothing about the result.
+    runs-on: ubuntu-24.04              # the target OS
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -106,23 +123,3 @@ jobs:
               /var/lib/linuxmuster-fileserver-verwaltung/smb.conf.example \
               | sudo tee /etc/samba/smb.conf > /dev/null
           sudo testparm -s
-
-  release:
-    needs: [gate, build, install-smoke]
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: packages
-          path: packages/
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
-          files: |
-            packages/*.deb
-            packages/*.changes
-          generate_release_notes: true

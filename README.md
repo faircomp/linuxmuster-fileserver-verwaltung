@@ -483,13 +483,21 @@ smbcontrol all reload-config               # nach Konfigänderungen, kein Neusta
 ## 10. Paket bauen
 
 ```bash
-apt install debhelper build-essential fakeroot
-make deb          # legt das .deb eine Ebene über dem Quellverzeichnis ab
+apt install build-essential debhelper
+make deb          # dpkg-buildpackage -us -uc -tc; legt das .deb eine Ebene über dem Quellverzeichnis ab
 ```
 
-Ein Tag `v*` löst den Release-Workflow aus: bauen auf `ubuntu-24.04`,
-Installations-Smoke-Test (Paket installieren, CLI aufrufen, gerenderte
-`smb.conf` mit `testparm` prüfen), dann GitHub-Release mit dem `.deb`.
+Die CI baut im Container `ghcr.io/linuxmuster/lmndev-runner:24.04`, dem
+Bau-Image der offiziellen linuxmuster.net-Pakete; wer lokal keine
+Debian-Werkzeuge hat, baut genauso.
+
+Bei jedem Push und Pull Request (`ci.yml`) werden die CLI kompiliert und mit
+ruff geprüft, das Paket im Container gebaut und auf `ubuntu-24.04` installiert
+(Smoke-Test: Paket installieren, CLI aufrufen, reine Funktionen importieren,
+gerenderte `smb.conf` mit `testparm` prüfen). Ein Tag `v<Version>`
+(`release.yml`) prüft zusätzlich, dass der Tag der Version in
+`debian/changelog` entspricht, und erstellt nach demselben Bau und Smoke-Test
+das GitHub-Release mit `.deb` und `.changes`.
 
 ---
 
