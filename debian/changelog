@@ -15,6 +15,9 @@ linuxmuster-fileserver-verwaltung (7.3.1) lmn73; urgency=medium
   * Add CLAUDE.md with the working rules of this repository.
   * Commit messages are English conventional commits (type(scope): subject)
     from this version on; the history stays as it is.
+  * Settle the licensing note: configuration examples and debian/rules rewritten as
+    original work, LICENSE (GPL-3.0-or-later) added, debian/copyright without the
+    UNRESOLVED stanza; the repository is public, docs no longer call it private.
 
  -- Kevin Stenzel <mail@kevin-stenzel.de>  Fri, 18 Sep 2026 10:00:00 +0200
 

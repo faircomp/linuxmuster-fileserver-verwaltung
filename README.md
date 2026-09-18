@@ -194,7 +194,7 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxmuster.net.gpg] https:/
   > /etc/apt/sources.list.d/lmn73.list
 
 apt update
-# .deb aus dem GitHub-Release (privates Repo, Download via angemeldetem gh):
+# .deb aus dem GitHub-Release (öffentliches Repo; per gh oder direkt von der Release-Seite):
 #   gh release download v7.3.0 -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'
 apt install ./linuxmuster-fileserver-verwaltung_7.3.0_all.deb
 ```
@@ -503,17 +503,10 @@ das GitHub-Release mit `.deb` und `.changes`.
 
 ## Lizenz und Herkunft
 
-Eigener Code: **GPL-3.0-or-later**.
+**GPL-3.0-or-later**, siehe [`LICENSE`](LICENSE) und [`debian/copyright`](debian/copyright).
 
-Abgeleitet von `linuxmuster-fileserver` (Netzint GmbH, Lukas Spitznagel).
-Zweck, Freigabemodell, ID-Mapping und Rechtekonzept unterscheiden sich; die
-Setup-CLI ist neu geschrieben. Nah am Original bleiben `krb5.conf.example`,
-`nsswitch.conf.example`, `debian/rules` und das `Makefile`.
-
-> ⚠️ **Offene Lizenzfrage.** Das Upstream-Repository enthält **keine
-> LICENSE-Datei** und nennt weder in `debian/control` noch im README noch in
-> einer Quelldatei eine Lizenz. Damit ist der Lizenzstatus des Originals — und
-> der davon abgeleiteten Teile — ungeklärt. Vor einer öffentlichen Verbreitung
-> sollte das mit Netzint GmbH geklärt oder die betroffenen Dateien durch
-> eigenständige Implementierungen ersetzt werden. Details in
-> [`debian/copyright`](debian/copyright).
+Vorbild in Zweck und Setup-Ablauf ist `linuxmuster-fileserver` (Netzint GmbH,
+Lukas Spitznagel); Freigabemodell, ID-Mapping und Rechtekonzept unterscheiden
+sich, und es wurde kein Code übernommen: Setup-CLI, Packaging und
+Konfigurationsbeispiele sind eigenständig geschrieben (`nsswitch.conf.example`
+ist der Ubuntu-24.04-Standard plus winbind).

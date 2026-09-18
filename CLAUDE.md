@@ -24,9 +24,8 @@ the DC and never a sophomorix-managed fileserver.
 - Version: the top entry of `debian/changelog` is the only hand-edited version (`7.3.N`, dist
   `lmn73`). Never bump it in a feature PR; Kevin bumps and tags `v7.3.N` (CI gate: tag ==
   changelog version).
-- License: `debian/copyright` marks the parts derived from linuxmuster-fileserver (Netzint GmbH)
-  as UNRESOLVED. Do not touch `debian/copyright`, add a `LICENSE` or change the README section
-  "Lizenz und Herkunft" until Kevin has clarified it with Netzint; no releases until then.
+- License: GPL-3.0-or-later (`LICENSE`, `debian/copyright`). No code from linuxmuster-fileserver
+  (Netzint GmbH) is included; keep it that way when touching the config examples or packaging.
 - Design decisions that look odd but are deliberate (see README §2): `rid` idmap backend, not
   `autorid`/`ad`; `acl_xattr:ignore system acls = yes` so the NT ACL is the only authority; the
   share lives in the Samba registry; no sophomorix directory structure is ever created.
