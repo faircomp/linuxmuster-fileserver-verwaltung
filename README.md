@@ -411,19 +411,32 @@ find Schulleitung -mindepth 1 -type f -exec smbcacls //localhost/Verwaltung {} -
     --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/0x0/CHANGE' \;
 find Schulleitung -mindepth 1 -type d -exec smbcacls //localhost/Verwaltung {} -A /root/.cred \
     --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/OI|CI/CHANGE' \;
+# Gegenprobe: erwartet keine Ausgabe
+find Schulleitung | while read -r o; do
+    smbcacls //localhost/Verwaltung "$o" -A /root/.cred | grep -q '\\verwaltung:' && echo "noch drin: $o"
+done
 smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred --propagate-inheritance \
     --add 'ACL:LINUXMUSTER\schulleitung:ALLOWED/OI|CI/CHANGE'          # berechtigte Gruppe hinzufügen, vererbt nach unten
 ```
 
-Die `find`-Schleife ist das Gegenstück zum Häkchen. `smbcacls
+Die `find`-Schleife ist für diesen Zweck das Gegenstück zum Häkchen (das
+Häkchen ersetzt *alle* Einträge der Kinder durch geerbte, die Schleife nimmt
+nur die eine Gruppe heraus und lässt andere Einzelrechte stehen). `smbcacls
 --propagate-inheritance --delete` genügt dafür **nicht**: Es entfernt unterhalb
 des Ordners nur Einträge, die als vererbt markiert sind (`I` in der Anzeige).
 Alles, was `setup` und die Benutzer über SMB unterhalb der Start-ACL anlegen,
 trägt die Einträge ohne diese Markierung (Dateien `0x0`, Ordner `OI|CI`), und
-die lässt der Befehl stehen — die alte Datei bliebe für die Gruppe lesbar (am
-Testsystem nachgestellt). Zeigt `smbcacls <objekt>` den Eintrag mit `I`,
-lautet er im `--delete` entsprechend `…/I/CHANGE` bzw. `…/OI|CI|I/CHANGE`.
-Meldungen `ACL for ACE … not found` für Objekte ohne den Eintrag sind harmlos.
+die lässt der Befehl stehen — die alte Datei bliebe für die Gruppe lesbar und,
+weil der Eintrag Ändern-Recht trägt, auch beschreibbar und löschbar (am
+Testsystem nachgestellt).
+
+Die Gegenprobe ist Pflicht: `--delete` löscht nur bei exakter Übereinstimmung
+von Flags und Maske. Ein Eintrag mit `FULL` statt `CHANGE`, mit `I`-Flag oder
+`OI|CI|I` bleibt stehen und erzeugt dieselbe Meldung `ACL for ACE … not found`
+wie ein Objekt, das den Eintrag nie hatte. Die Meldungen sind also nur harmlos,
+solange die Gegenprobe leer bleibt; meldet sie `noch drin:`, den Eintrag so in
+`--delete` angeben, wie `smbcacls <objekt>` ihn zeigt (z. B. `…/I/CHANGE`,
+`…/OI|CI|I/CHANGE` oder `…/0x0/FULL`), und die Gegenprobe wiederholen.
 `--propagate-inheritance --add` dagegen tut, was es soll: Der neue Eintrag
 landet als vererbt auf allen Objekten darunter.
 
@@ -539,7 +552,7 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 | `id huber` / `getent passwd huber` findet niemanden | Domänenkonten heißen hier `LINUXMUSTER\huber` (siehe 2.1): `getent passwd 'LINUXMUSTER\huber'`. Gewollt, kein `winbind use default domain` |
 | `log.winbindd` voller `Could not convert sids: NT_STATUS_INVALID_SID`, `log.wb-LINUXMUSTER` meldet `Unable to open tdb '/var/lib/samba/private/secrets.ldb'` | harmloses Rauschen (Log-Level 1) bei jedem SMB-Zugriff auf einem Mitgliedsserver mit Samba 4.19: Token-SIDs wie `S-1-18-1` lassen sich nicht auf Unix-IDs abbilden, und `secrets.ldb` gibt es nur auf einem DC. Kein Handlungsbedarf |
 | `sophomorix-group --info` zeigt `Members: 0` | Anzeigeeigenheit; `samba-tool group listmembers <gruppe>` zeigt die Wahrheit (siehe 5.) |
-| Eine alte Datei bleibt lesbar, obwohl die Gruppe vom Ordner entfernt wurde | Rechte nur am Ordner geändert; „untergeordnete Objekte ersetzen" (Windows) bzw. die `find`-Schleife aus 6. fehlte — `smbcacls --propagate-inheritance --delete` allein lässt die Einträge stehen |
+| Eine alte Datei bleibt lesbar (und beschreibbar), obwohl die Gruppe vom Ordner entfernt wurde | Rechte nur am Ordner geändert; „untergeordnete Objekte ersetzen" (Windows) bzw. die `find`-Schleife samt Gegenprobe aus 6. fehlte — `smbcacls --propagate-inheritance --delete` allein lässt die Einträge stehen, und `--delete` ohne exakt passende Flags/Maske ebenfalls |
 
 ```bash
 linuxmuster-fileserver-verwaltung status       # Dienste, Join, DC, Freigabe, Gruppen-SIDs

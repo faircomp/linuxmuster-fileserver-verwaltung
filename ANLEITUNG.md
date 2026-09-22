@@ -369,7 +369,8 @@ Für einen Ordner, der enger sein soll als die Wurzel (Beispiel `Schulleitung`):
 > ihre alten, ursprünglich geerbten Einträge behalten: Der Ordner verschwindet
 > zwar aus der Ansicht der entfernten Gruppe, und neue Dateien lassen sich dort
 > nicht anlegen — eine schon vorhandene Datei bleibt über ihren Pfad aber
-> weiterhin lesbar. Im Test nachgestellt: Ein Lehrer aus `verwaltung` konnte
+> weiterhin lesbar und, weil ihr Eintrag Ändern-Recht trägt, auch beschreibbar
+> und löschbar. Im Test nachgestellt: Ein Lehrer aus `verwaltung` konnte
 > eine vorher angelegte Datei in `Schulleitung` nach dem Entfernen der Gruppe
 > noch lesen, bis die Einträge der untergeordneten Objekte ersetzt wurden. Bei
 > einem noch leeren Ordner ist der Schritt entbehrlich.
@@ -383,8 +384,9 @@ Ordner, auf die sie tatsächlich Rechte haben. Das ist gewollt.
 
 Ohne Windows-Client gehen dieselben Schritte vom Fileserver aus mit `smbcacls`
 (Vererbung aus mit `-I copy`, Gruppe vom Ordner entfernen mit `--delete`,
-untergeordnete Objekte ersetzen mit einer `find`-Schleife über alles darunter);
-die am Testsystem geprüften Befehle stehen in README 6.
+untergeordnete Objekte ersetzen mit einer `find`-Schleife über alles darunter,
+danach die Gegenprobe, die kein Objekt mehr mit der Gruppe finden darf); die am
+Testsystem geprüften Befehle stehen in README 6.
 
 ### 9.5 Delegation an eine eigene Admin-Gruppe (optional)
 
@@ -479,7 +481,7 @@ Ordnerrechte zerstören, die du in Schritt 9.4 vergeben hast.
 | Alle ausgesperrt, Gruppe existiert | Gruppe neu angelegt → neue SID → `repair-acls` |
 | Benutzer sieht Ordner nicht | Kein Recht → `hide unreadable` blendet aus. Gewollt. |
 | `id huber` / `getent passwd huber` findet nichts | Domänenkonten heißen `LINUXMUSTER\huber` — Präfix nötig, gewollt (9.3) |
-| Alte Datei bleibt lesbar, obwohl die Gruppe vom Ordner entfernt ist | „Untergeordnete Objekte ersetzen" fehlte (9.4, Schritt 5) |
+| Alte Datei bleibt lesbar (und beschreibbar), obwohl die Gruppe vom Ordner entfernt ist | „Untergeordnete Objekte ersetzen" fehlte (9.4, Schritt 5); ohne Windows: `find`-Schleife samt Gegenprobe (README 6) |
 | `sophomorix-group --info` zeigt `Members: 0` | Anzeigeeigenheit; `samba-tool group listmembers verwaltung` zeigt die Wahrheit (Schritt 4) |
 | `log.winbindd` voller `NT_STATUS_INVALID_SID`, `log.wb-LINUXMUSTER` vermisst `secrets.ldb` | Harmloses Rauschen auf Mitgliedsservern, kein Handlungsbedarf (README 9) |
 
