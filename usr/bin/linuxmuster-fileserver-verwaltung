@@ -1103,6 +1103,11 @@ def cmd_status(args):
 
 def cmd_show(args):
     check_root()
+    if (args.password or args.password_file) and not args.username:
+        raise SetupError(
+            "-p/-P wirken nur zusammen mit -u <admin>: smbcacls liest die "
+            "NT-ACL nur mit einem Domaenenkonto."
+        )
     path = stdout_of(run(["/usr/bin/net", "conf", "getparm", args.share, "path"]))
     if not path or not os.path.isdir(path):
         sys.exit("Freigabe [%s] hat keinen gueltigen Pfad." % args.share)
@@ -1135,8 +1140,9 @@ def cmd_show(args):
             )
         print(stdout_of(result) if result.returncode == 0 else out(result))
     else:
-        print("gesetzt. Zum Anzeigen Zugangsdaten mitgeben:")
+        print("gesetzt. Zum Anzeigen Zugangsdaten mitgeben (Passwort wird abgefragt):")
         print("  linuxmuster-fileserver-verwaltung show -u <admin>")
+        print("  linuxmuster-fileserver-verwaltung show -u <admin> -P <datei>   # fuer Skripte")
 
     count = run(
         [
@@ -1368,7 +1374,10 @@ def main():
     show_parser = subparsers.add_parser("show", help="Freigabe und Rechte anzeigen")
     show_parser.add_argument("-s", "--share", default="Verwaltung")
     show_parser.add_argument(
-        "-u", "--username", help="Zugangsdaten, um die NT-ACL lesbar anzuzeigen"
+        "-u",
+        "--username",
+        help="Domaenen-Admin, mit dem die NT-ACL der Freigabewurzel ueber smbd gelesen "
+        "wird (Passwort wird abgefragt; in Skripten -P)",
     )
     show_parser.add_argument("-p", "--password")
     show_parser.add_argument("-P", "--password-file", help="Datei mit dem Passwort")
