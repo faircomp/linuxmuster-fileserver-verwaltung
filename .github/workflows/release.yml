@@ -142,13 +142,24 @@ jobs:
           mkdir -p previous
           tag="${{ github.event.inputs.prev_tag }}"
           if [ -z "$tag" ]; then
-            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 \
+            # Prefer the newest real release; fall back to the newest prerelease. Skipping is
+            # only legitimate when the repo has NO release at all: this job gates the release
+            # job, so a silent skip would publish a tag whose upgrade path was never tested.
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
                     --json tagName,isDraft,isPrerelease \
                     --jq '[.[] | select(.isDraft == false and .isPrerelease == false)][0].tagName // ""')
+            if [ -z "$tag" ]; then
+              tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
+                      --json tagName,isDraft --jq '[.[] | select(.isDraft == false)][0].tagName // ""')
+              [ -n "$tag" ] && echo "::warning::no full release yet, upgrading from prerelease $tag"
+            fi
           fi
           if [ -z "$tag" ]; then
+            if [ "$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq 'length')" != "0" ]; then
+              echo "::error::releases exist but none could be selected - refusing to skip"; exit 1
+            fi
             echo "skip=1" >> "$GITHUB_OUTPUT"
-            echo "::notice::no published release yet, upgrade smoke skipped"
+            echo "::notice::first release of this package, nothing to upgrade from"
             exit 0
           fi
           for i in 1 2 3; do
@@ -171,6 +182,9 @@ jobs:
           # domain, so the file is written by hand here -- same section layout, same keys,
           # same mode, including the recorded group SID that turns a deleted-and-recreated
           # AD group into a plain error message instead of a silent access denial.
+          # The package does not ship /etc/linuxmuster-fileserver-verwaltung (debian/install
+          # places only usr/ and var/); `setup` creates it with os.makedirs, so the fixture
+          # has to create it here too.
           sudo install -d -m 0755 /etc/linuxmuster-fileserver-verwaltung
           sudo tee /etc/linuxmuster-fileserver-verwaltung/share.conf >/dev/null <<'CONF'
           [share]
@@ -210,7 +224,9 @@ jobs:
           PY
 
           sudo sha256sum /etc/linuxmuster-fileserver-verwaltung/share.conf > before.sha256
-          stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > before.perms
+          # An empty manifest would pass `sha256sum -c` while proving nothing.
+          test -s before.sha256
+          sudo stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > before.perms
           python3 parse-share-conf.py > before.parsed
           cat before.sha256 before.perms before.parsed
 
@@ -226,12 +242,14 @@ jobs:
           # package has none), so the second proof is the payload check further down --
           # the files on disk are the freshly built ones, byte for byte.
           grep -qE 'Unpacking linuxmuster-fileserver-verwaltung \([^)]+\) over \([^)]+\)' upgrade.log
+          # dpkg's own record of the action, independent of apt's wording.
+          grep -q ' upgrade linuxmuster-fileserver-verwaltung:' /var/log/dpkg.log
 
           # ---------------------------------------------------------------- state AFTER
           # share.conf byte-identical, mode and ownership unchanged, still parsed the
           # same way by the new version's own loader.
           sudo sha256sum -c before.sha256
-          stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > after.perms
+          sudo stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > after.perms
           diff -u before.perms after.perms
           python3 parse-share-conf.py > after.parsed
           diff -u before.parsed after.parsed
