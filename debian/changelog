@@ -1,3 +1,44 @@
+linuxmuster-fileserver-verwaltung (7.3.2) lmn73; urgency=medium
+
+  * Documentation fixes from the 2026-09-22 test campaign (fresh member
+    server, linuxmuster.net 7.3, Ubuntu 24.04). setup, the join and the
+    share configuration are unchanged.
+  * README 4.2 no longer asks for the deb.linuxmuster.net package source:
+    every dependency comes from Ubuntu 24.04 itself, as ANLEITUNG step 6
+    already said and every install test confirms. The download example
+    names no version any more ("gh release download" without a tag fetches
+    the latest release).
+  * The installer does not ask for the Kerberos realm on a correctly
+    configured server (krb5-config derives it from the DNS domain); README
+    and ANLEITUNG say so instead of telling the admin to leave a prompt
+    empty that does not appear.
+  * Document -P/--password-file for setup, show and repair-acls (scripts,
+    cron), and that "show" prints the NT ACL of the share root only with
+    -u <admin>: on a member server only smbcacls through smbd reads the
+    stored ACL truthfully, and that needs a domain account.
+  * show: the hint printed without -u also names the scriptable form
+    (-u <admin> -P <file>); -p/-P without -u are rejected with a message
+    instead of being silently ignored.
+  * Domain accounts resolve on this server only as DOMAIN\name (no "winbind
+    use default domain"); README 2.1, ANLEITUNG 8/9.3/9.4 and both
+    troubleshooting tables state the exact spelling.
+  * ANLEITUNG 9.4: tightening a folder that already contains files needs
+    "replace all child object permission entries" - without it a file
+    created earlier stays readable for the removed group. README 6 gains
+    the equivalent smbcacls commands (--propagate-inheritance) for servers
+    managed without a Windows client.
+  * ANLEITUNG step 4 and README 5 check the group with "samba-tool group
+    listmembers": "sophomorix-group --info" shows "Members: 0" although the
+    members are set (display quirk).
+  * Troubleshooting: the level-1 winbind messages NT_STATUS_INVALID_SID and
+    "Unable to open tdb .../secrets.ldb" are harmless noise on a member
+    server.
+  * ANLEITUNG "Server wieder abbauen": net ads leave works with any Domain
+    Admins account, and the DNS record can be deleted from the fileserver
+    itself by naming the DC instead of localhost; status then exits 1.
+
+ -- Kevin Stenzel <mail@kevin-stenzel.de>  Tue, 22 Sep 2026 14:30:00 +0200
+
 linuxmuster-fileserver-verwaltung (7.3.1) lmn73; urgency=medium
 
   * Apply the faircomp package conventions (linuxmusterDEV
