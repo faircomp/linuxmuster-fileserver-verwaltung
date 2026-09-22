@@ -11,6 +11,11 @@ on:
   push:
     tags: ['v[0-9]*']
   workflow_dispatch:
+    inputs:
+      prev_tag:
+        description: 'upgrade smoke: tag to upgrade from (empty = newest published release)'
+        required: false
+        default: ''
 
 jobs:
   gate:
@@ -107,8 +112,190 @@ jobs:
               | sudo tee /etc/samba/smb.conf > /dev/null
           sudo testparm -s
 
+  # Kevin's rule: a release must still install cleanly ON TOP OF the version that is
+  # already running on a school server. This job installs the newest published release,
+  # puts realistic config/state in place, upgrades to the freshly built package and
+  # checks that nothing was lost. It skips itself on the very first release.
+  #
+  # Honest about this package: it ships NO maintainer scripts and NO conffiles, and
+  # without `setup` (which needs a domain) it creates no state of its own. So there is
+  # no postinst upgrade branch here -- the upgrade path under test is dpkg's own, and
+  # the real value of the job is the tripwire: the day someone adds a postinst or
+  # declares share.conf a conffile is the day share.conf is silently overwritten.
+  upgrade-smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read        # restrictive org defaults must not break the asset download
+    steps:
+      - uses: actions/checkout@v4          # needed for dpkg-parsechangelog and the fixtures
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: packages/
+      - name: Fetch the published release to upgrade from
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p previous
+          tag="${{ github.event.inputs.prev_tag }}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 \
+                    --json tagName,isDraft,isPrerelease \
+                    --jq '[.[] | select(.isDraft == false and .isPrerelease == false)][0].tagName // ""')
+          fi
+          if [ -z "$tag" ]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::no published release yet, upgrade smoke skipped"
+            exit 0
+          fi
+          for i in 1 2 3; do
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir previous && break
+            echo "download attempt $i failed, retrying"; sleep 10
+          done
+          test -n "$(ls previous/*.deb 2>/dev/null)"
+          echo "::notice::upgrading from $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install the released version, upgrade to the built one
+        if: steps.prev.outputs.skip != '1'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./previous/*.deb
+
+          # ---------------------------------------------------------------- state BEFORE
+          # The one file this package owns on a configured server: share.conf, written by
+          # `setup` (save_config -> configparser, mode 0644). `setup` itself needs a
+          # domain, so the file is written by hand here -- same section layout, same keys,
+          # same mode, including the recorded group SID that turns a deleted-and-recreated
+          # AD group into a plain error message instead of a silent access denial.
+          sudo install -d -m 0755 /etc/linuxmuster-fileserver-verwaltung
+          sudo tee /etc/linuxmuster-fileserver-verwaltung/share.conf >/dev/null <<'CONF'
+          [share]
+          name = Verwaltung
+          path = /srv/samba/verwaltung
+          workgroup = DEV
+          rights_group = Domain Admins
+          admin_user = DEV\lmnt-admin
+
+          [groups]
+          DEV\verwaltung = S-1-5-21-3018922564-942603307-3293085503-1249
+          CONF
+          sudo chmod 0644 /etc/linuxmuster-fileserver-verwaltung/share.conf
+
+          # The package's own loader must understand the file -- before and after. A
+          # format change that breaks existing installs is the failure this catches;
+          # comparing the parse result is stricter than comparing the bytes alone.
+          cat > parse-share-conf.py <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from importlib.machinery import SourceFileLoader
+
+          loader = SourceFileLoader("lmv", "/usr/bin/linuxmuster-fileserver-verwaltung")
+          spec = importlib.util.spec_from_loader("lmv", loader)
+          module = importlib.util.module_from_spec(spec)
+          loader.exec_module(module)
+
+          parser = module.load_config()
+          json.dump(
+              {name: dict(parser[name]) for name in parser.sections()},
+              sys.stdout,
+              sort_keys=True,
+              indent=2,
+          )
+          print()
+          PY
+
+          sudo sha256sum /etc/linuxmuster-fileserver-verwaltung/share.conf > before.sha256
+          stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > before.perms
+          python3 parse-share-conf.py > before.parsed
+          cat before.sha256 before.perms before.parsed
+
+          # ---------------------------------------------------------------- the upgrade
+          # --reinstall --allow-downgrades: on main the build is often version-equal to
+          # the release, and a plain install would report "already the newest version"
+          # and test nothing. With it dpkg really unpacks over the installed version.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades \
+            ./packages/linuxmuster-fileserver-verwaltung_*.deb 2>&1 | tee upgrade.log
+
+          # The upgrade path really ran and did not silently no-op: dpkg unpacked OVER
+          # the installed version. There is no postinst branch to observe here (the
+          # package has none), so the second proof is the payload check further down --
+          # the files on disk are the freshly built ones, byte for byte.
+          grep -qE 'Unpacking linuxmuster-fileserver-verwaltung \([^)]+\) over \([^)]+\)' upgrade.log
+
+          # ---------------------------------------------------------------- state AFTER
+          # share.conf byte-identical, mode and ownership unchanged, still parsed the
+          # same way by the new version's own loader.
+          sudo sha256sum -c before.sha256
+          stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > after.perms
+          diff -u before.perms after.perms
+          python3 parse-share-conf.py > after.parsed
+          diff -u before.parsed after.parsed
+
+          # The installed version IS the built one, and every shipped file on disk comes
+          # from the freshly built .deb -- the CLI and the three .example templates, which
+          # are the files that legitimately change between versions.
+          version="$(dpkg-parsechangelog -S Version)"
+          test "$(dpkg-query -W -f='${Version}' linuxmuster-fileserver-verwaltung)" = "$version"
+          deb="$(ls packages/linuxmuster-fileserver-verwaltung_*.deb)"
+          for shipped in usr/bin/linuxmuster-fileserver-verwaltung \
+                         var/lib/linuxmuster-fileserver-verwaltung/smb.conf.example \
+                         var/lib/linuxmuster-fileserver-verwaltung/krb5.conf.example \
+                         var/lib/linuxmuster-fileserver-verwaltung/nsswitch.conf.example; do
+            from_deb="$(dpkg-deb --fsys-tarfile "$deb" | tar -xOf - "./$shipped" | sha256sum | cut -d' ' -f1)"
+            on_disk="$(sha256sum "/$shipped" | cut -d' ' -f1)"
+            test "$from_deb" = "$on_disk"
+          done
+
+          # The tripwire: no conffiles today. The day someone declares share.conf one,
+          # dpkg starts prompting or replacing it on upgrade -- and this fails first.
+          test -z "$(dpkg-query -W -f='${Conffiles}' linuxmuster-fileserver-verwaltung)"
+          # dpkg --verify is only a real check with md5sums; assert they exist.
+          test -s /var/lib/dpkg/info/linuxmuster-fileserver-verwaltung.md5sums
+          test -z "$(sudo dpkg --verify linuxmuster-fileserver-verwaltung)"
+          test -z "$(dpkg --audit)"
+          sudo apt-get -f install -s | grep -q '0 newly installed'
+
+          # The upgraded package still works: CLI on PATH, the pure functions import and
+          # run (the same reimport install-smoke does -- "--help" alone passes even when
+          # a constant went missing), and the rendered smb.conf is still valid Samba
+          # configuration.
+          test "$(command -v linuxmuster-fileserver-verwaltung)" = /usr/bin/linuxmuster-fileserver-verwaltung
+          linuxmuster-fileserver-verwaltung --help >/dev/null
+          linuxmuster-fileserver-verwaltung setup --help >/dev/null
+          python3 - <<'PY'
+          import importlib.util
+          from importlib.machinery import SourceFileLoader
+
+          loader = SourceFileLoader("lmv", "/usr/bin/linuxmuster-fileserver-verwaltung")
+          spec = importlib.util.spec_from_loader("lmv", loader)
+          module = importlib.util.module_from_spec(spec)
+          loader.exec_module(module)
+
+          module.validate_share_name("Verwaltung")
+          for name in ("Ver/waltung", "a:b", ""):
+              try:
+                  module.validate_share_name(name)
+              except module.SetupError:
+                  continue
+              raise SystemExit("invalid share name accepted: %r" % name)
+
+          module.check_time_sync()
+          print("pure functions OK")
+          PY
+          sed -e 's/%%DOMAIN%%/LINUXMUSTER.LAN/g' \
+              -e 's/%%WORKGROUP%%/LINUXMUSTER/g' \
+              -e 's/%%HOSTNAME%%/VERWALTUNG01/g' \
+              /var/lib/linuxmuster-fileserver-verwaltung/smb.conf.example \
+              | sudo tee /etc/samba/smb.conf > /dev/null
+          sudo testparm -s
+
   release:
-    needs: [gate, build, install-smoke]
+    needs: [gate, build, install-smoke, upgrade-smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
