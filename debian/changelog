@@ -1,3 +1,16 @@
+linuxmuster-fileserver-verwaltung (7.3.3) lmn73; urgency=medium
+
+  * CI gains the upgrade-smoke job: every push and every release now installs
+    the newest published release, writes a realistic share.conf on it, upgrades
+    to the freshly built package and fails unless share.conf is byte-identical
+    with unchanged mode and still parses through the package's own loader, the
+    CLI and the three .example templates on disk are the freshly built ones,
+    the package still declares no conffiles, and dpkg --verify, dpkg --audit
+    and apt stay silent. The package has no maintainer scripts and no
+    conffiles today, so the job is mainly a tripwire for the day one is added.
+
+ -- Kevin Stenzel <mail@kevin-stenzel.de>  Tue, 22 Sep 2026 19:40:00 +0200
+
 linuxmuster-fileserver-verwaltung (7.3.2) lmn73; urgency=medium
 
   * Documentation fixes from the 2026-09-22 test campaign (fresh member

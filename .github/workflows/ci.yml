@@ -8,10 +8,18 @@
 name: ci
 
 on:
+  # Only main and tags on push: every other branch is covered by its pull request,
+  # so a PR branch does not run the whole pipeline twice.
   push:
-    branches: ['**']
+    branches: [main]
     tags: ['v[0-9]*']       # the sanity checks run for releases too (release.yml only gates/builds)
   pull_request:
+  workflow_dispatch:
+    inputs:
+      prev_tag:
+        description: 'upgrade smoke: tag to upgrade from (empty = newest published release)'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -122,6 +130,212 @@ jobs:
           done
       - name: The rendered smb.conf must be valid Samba configuration
         run: |
+          sed -e 's/%%DOMAIN%%/LINUXMUSTER.LAN/g' \
+              -e 's/%%WORKGROUP%%/LINUXMUSTER/g' \
+              -e 's/%%HOSTNAME%%/VERWALTUNG01/g' \
+              /var/lib/linuxmuster-fileserver-verwaltung/smb.conf.example \
+              | sudo tee /etc/samba/smb.conf > /dev/null
+          sudo testparm -s
+
+  # Kevin's rule: a release must still install cleanly ON TOP OF the version that is
+  # already running on a school server. This job installs the newest published release,
+  # puts realistic config/state in place, upgrades to the freshly built package and
+  # checks that nothing was lost. It skips itself on the very first release.
+  #
+  # Honest about this package: it ships NO maintainer scripts and NO conffiles, and
+  # without `setup` (which needs a domain) it creates no state of its own. So there is
+  # no postinst upgrade branch here -- the upgrade path under test is dpkg's own, and
+  # the real value of the job is the tripwire: the day someone adds a postinst or
+  # declares share.conf a conffile is the day share.conf is silently overwritten.
+  upgrade-smoke:
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read        # restrictive org defaults must not break the asset download
+    steps:
+      - uses: actions/checkout@v4          # needed for dpkg-parsechangelog and the fixtures
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: packages/
+      - name: Fetch the published release to upgrade from
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Through env, never interpolated into the script: a ${{ }} expression in a run
+          # block is substituted before the shell sees it, so its content could inject code.
+          PREV_TAG: ${{ github.event.inputs.prev_tag }}
+        run: |
+          set -eu
+          mkdir -p previous
+          tag="${PREV_TAG:-}"
+          if [ -z "$tag" ]; then
+            # Prefer the newest real release; fall back to the newest prerelease. Skipping is
+            # only legitimate when the repo has NO release at all: this job gates the release
+            # job, so a silent skip would publish a tag whose upgrade path was never tested.
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
+                    --json tagName,isDraft,isPrerelease \
+                    --jq '[.[] | select(.isDraft == false and .isPrerelease == false)][0].tagName // ""')
+            if [ -z "$tag" ]; then
+              tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
+                      --json tagName,isDraft --jq '[.[] | select(.isDraft == false)][0].tagName // ""')
+              [ -n "$tag" ] && echo "::warning::no full release yet, upgrading from prerelease $tag"
+            fi
+          fi
+          if [ -z "$tag" ]; then
+            if [ "$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq 'length')" != "0" ]; then
+              echo "::error::releases exist but none could be selected - refusing to skip"; exit 1
+            fi
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::first release of this package, nothing to upgrade from"
+            exit 0
+          fi
+          for i in 1 2 3; do
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir previous && break
+            echo "download attempt $i failed, retrying"; sleep 10
+          done
+          test -n "$(ls previous/*.deb 2>/dev/null)"
+          echo "::notice::upgrading from $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install the released version, upgrade to the built one
+        if: steps.prev.outputs.skip != '1'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./previous/*.deb
+
+          # ---------------------------------------------------------------- state BEFORE
+          # The one file this package owns on a configured server: share.conf, written by
+          # `setup` (save_config -> configparser, mode 0644). `setup` itself needs a
+          # domain, so the file is written by hand here -- same section layout, same keys,
+          # same mode, including the recorded group SID that turns a deleted-and-recreated
+          # AD group into a plain error message instead of a silent access denial.
+          # The package does not ship /etc/linuxmuster-fileserver-verwaltung (debian/install
+          # places only usr/ and var/); `setup` creates it with os.makedirs, so the fixture
+          # has to create it here too.
+          sudo install -d -m 0755 /etc/linuxmuster-fileserver-verwaltung
+          sudo tee /etc/linuxmuster-fileserver-verwaltung/share.conf >/dev/null <<'CONF'
+          [share]
+          name = Verwaltung
+          path = /srv/samba/verwaltung
+          workgroup = DEV
+          rights_group = Domain Admins
+          admin_user = DEV\lmnt-admin
+
+          [groups]
+          DEV\verwaltung = S-1-5-21-3018922564-942603307-3293085503-1249
+          CONF
+          sudo chmod 0644 /etc/linuxmuster-fileserver-verwaltung/share.conf
+
+          # Every python below runs with -P: this job checks the repository out, so
+          # without it the working directory lands on sys.path and the module under
+          # /usr/bin could pull its imports from the SOURCE tree instead of the system.
+          # The package's own loader must understand the file -- before and after. A
+          # format change that breaks existing installs is the failure this catches;
+          # comparing the parse result is stricter than comparing the bytes alone.
+          cat > parse-share-conf.py <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from importlib.machinery import SourceFileLoader
+
+          loader = SourceFileLoader("lmv", "/usr/bin/linuxmuster-fileserver-verwaltung")
+          spec = importlib.util.spec_from_loader("lmv", loader)
+          module = importlib.util.module_from_spec(spec)
+          loader.exec_module(module)
+
+          parser = module.load_config()
+          json.dump(
+              {name: dict(parser[name]) for name in parser.sections()},
+              sys.stdout,
+              sort_keys=True,
+              indent=2,
+          )
+          print()
+          PY
+
+          sudo sha256sum /etc/linuxmuster-fileserver-verwaltung/share.conf > before.sha256
+          # An empty manifest would pass `sha256sum -c` while proving nothing.
+          test -s before.sha256
+          sudo stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > before.perms
+          python3 -P parse-share-conf.py > before.parsed
+          cat before.sha256 before.perms before.parsed
+
+          # ---------------------------------------------------------------- the upgrade
+          # --reinstall --allow-downgrades: on main the build is often version-equal to
+          # the release, and a plain install would report "already the newest version"
+          # and test nothing. With it dpkg really unpacks over the installed version.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades \
+            ./packages/linuxmuster-fileserver-verwaltung_*.deb 2>&1 | tee upgrade.log
+
+          # The upgrade path really ran and did not silently no-op: dpkg unpacked OVER
+          # the installed version. There is no postinst branch to observe here (the
+          # package has none), so the second proof is the payload check further down --
+          # the files on disk are the freshly built ones, byte for byte.
+          grep -qE 'Unpacking linuxmuster-fileserver-verwaltung \([^)]+\) over \([^)]+\)' upgrade.log
+          # dpkg's own record of the action, independent of apt's wording.
+          grep -q ' upgrade linuxmuster-fileserver-verwaltung:' /var/log/dpkg.log
+
+          # ---------------------------------------------------------------- state AFTER
+          # share.conf byte-identical, mode and ownership unchanged, still parsed the
+          # same way by the new version's own loader.
+          sudo sha256sum -c before.sha256
+          sudo stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > after.perms
+          diff -u before.perms after.perms
+          python3 -P parse-share-conf.py > after.parsed
+          diff -u before.parsed after.parsed
+
+          # The installed version IS the built one, and every shipped file on disk comes
+          # from the freshly built .deb -- the CLI and the three .example templates, which
+          # are the files that legitimately change between versions.
+          version="$(dpkg-parsechangelog -S Version)"
+          test "$(dpkg-query -W -f='${Version}' linuxmuster-fileserver-verwaltung)" = "$version"
+          deb="$(ls packages/linuxmuster-fileserver-verwaltung_*.deb)"
+          for shipped in usr/bin/linuxmuster-fileserver-verwaltung \
+                         var/lib/linuxmuster-fileserver-verwaltung/smb.conf.example \
+                         var/lib/linuxmuster-fileserver-verwaltung/krb5.conf.example \
+                         var/lib/linuxmuster-fileserver-verwaltung/nsswitch.conf.example; do
+            from_deb="$(dpkg-deb --fsys-tarfile "$deb" | tar -xOf - "./$shipped" | sha256sum | cut -d' ' -f1)"
+            on_disk="$(sha256sum "/$shipped" | cut -d' ' -f1)"
+            test "$from_deb" = "$on_disk"
+          done
+
+          # The tripwire: no conffiles today. The day someone declares share.conf one,
+          # dpkg starts prompting or replacing it on upgrade -- and this fails first.
+          test -z "$(dpkg-query -W -f='${Conffiles}' linuxmuster-fileserver-verwaltung)"
+          # dpkg --verify is only a real check with md5sums; assert they exist.
+          test -s /var/lib/dpkg/info/linuxmuster-fileserver-verwaltung.md5sums
+          test -z "$(sudo dpkg --verify linuxmuster-fileserver-verwaltung)"
+          test -z "$(dpkg --audit)"
+          sudo apt-get -f install -s | grep -q '0 newly installed'
+
+          # The upgraded package still works: CLI on PATH, the pure functions import and
+          # run (the same reimport install-smoke does -- "--help" alone passes even when
+          # a constant went missing), and the rendered smb.conf is still valid Samba
+          # configuration.
+          test "$(command -v linuxmuster-fileserver-verwaltung)" = /usr/bin/linuxmuster-fileserver-verwaltung
+          linuxmuster-fileserver-verwaltung --help >/dev/null
+          linuxmuster-fileserver-verwaltung setup --help >/dev/null
+          python3 -P - <<'PY'
+          import importlib.util
+          from importlib.machinery import SourceFileLoader
+
+          loader = SourceFileLoader("lmv", "/usr/bin/linuxmuster-fileserver-verwaltung")
+          spec = importlib.util.spec_from_loader("lmv", loader)
+          module = importlib.util.module_from_spec(spec)
+          loader.exec_module(module)
+
+          module.validate_share_name("Verwaltung")
+          for name in ("Ver/waltung", "a:b", ""):
+              try:
+                  module.validate_share_name(name)
+              except module.SetupError:
+                  continue
+              raise SystemExit("invalid share name accepted: %r" % name)
+
+          module.check_time_sync()
+          print("pure functions OK")
+          PY
           sed -e 's/%%DOMAIN%%/LINUXMUSTER.LAN/g' \
               -e 's/%%WORKGROUP%%/LINUXMUSTER/g' \
               -e 's/%%HOSTNAME%%/VERWALTUNG01/g' \
