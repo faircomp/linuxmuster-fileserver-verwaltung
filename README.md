@@ -61,6 +61,14 @@ gleicher Konfiguration dieselben IDs.
 Die IDs stimmen **nicht** mit denen des linuxmuster-Servers überein. Das ist
 unkritisch: Rechte werden als NT-ACLs geführt, und die sind SID-basiert.
 
+Domänenkonten heißen auf diesem Server immer `<DOM>\<name>`, also etwa
+`LINUXMUSTER\huber` und `LINUXMUSTER\verwaltung` — `winbind use default
+domain` ist nicht gesetzt und wird nicht gebraucht, weil die Freigabe ihre
+Gruppen qualifiziert nennt und die Rechte an SIDs hängen. Folge:
+`getent passwd 'LINUXMUSTER\huber'` findet das Konto, `id huber` nicht. Das
+ist kein Fehler; die Schreibweise mit Präfix gilt überall, auch in den
+Windows-Dialogen und bei `smbcacls`.
+
 ### 2.2 `acl_xattr:ignore system acls = yes`
 
 Samba kann NT-ACLs auf zwei Arten führen:
@@ -184,23 +192,24 @@ linuxmuster-import-devices
 > „Es funktioniert doch" beweist hier also nichts — nur `net ads testjoin`
 > bzw. `status` tut es.
 
-### 4.2 Paketquelle und Installation
+### 4.2 Installation
+
+Eine zusätzliche Paketquelle ist **nicht** nötig — sämtliche Abhängigkeiten
+(samba, winbind, krb5-user, acl, …) kommen aus Ubuntu 24.04 selbst; das ist in
+jedem Testlauf und im CI-Smoke-Test ohne Zusatzquelle verifiziert. Das `.deb`
+kommt aus dem GitHub-Release (öffentliches Repo, `gh` braucht dafür keine
+Anmeldung; alternativ von der Release-Seite laden):
 
 ```bash
-wget -qO- "https://deb.linuxmuster.net/pub.gpg" \
-  | gpg --dearmour -o /usr/share/keyrings/linuxmuster.net.gpg
-
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxmuster.net.gpg] https://deb.linuxmuster.net/ lmn73 main" \
-  > /etc/apt/sources.list.d/lmn73.list
-
-apt update
-# .deb aus dem GitHub-Release (öffentliches Repo; per gh oder direkt von der Release-Seite):
-#   gh release download v7.3.0 -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'
-apt install ./linuxmuster-fileserver-verwaltung_7.3.0_all.deb
+gh release download -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'   # ohne Tag: neuestes Release
+apt install ./linuxmuster-fileserver-verwaltung_*_all.deb
 ```
 
-Bei der Kerberos-Abfrage des Installers den **Realm leer lassen** — `setup`
-schreibt die `krb5.conf` ohnehin neu.
+Der Installer fragt in der Regel **nicht** nach dem Kerberos-Realm:
+`krb5-config` leitet ihn aus der DNS-Domäne ab (deshalb muss DNS schon
+stimmen, siehe 3.) und schreibt `/etc/krb5.conf` ohne Rückfrage. Erscheint die
+Abfrage doch, Vorgabe übernehmen oder leer lassen — `setup` ersetzt die Datei
+ohnehin, das Original bleibt als `/etc/krb5.conf.lmn-orig` liegen.
 
 > Anders als das Originalpaket hängt dieses nicht vom Paket `ntp` ab, sondern
 > von `chrony | ntpsec | systemd-timesyncd`. Damit entfällt das
@@ -242,12 +251,25 @@ Das Passwort wird interaktiv abgefragt und nie über die Kommandozeile an die
 Samba-Werkzeuge übergeben — es läuft über eine kurzlebige Datei mit `0600`,
 damit es nicht in der Prozessliste steht.
 
+Für Skripte und Cron gibt es bei `setup`, `show` und `repair-acls` die Option
+`-P/--password-file <datei>` (Datei mit dem Passwort, Rechte `0600`); ohne
+Terminal bricht die interaktive Abfrage mit genau diesem Hinweis ab.
+`-p/--password` existiert ebenfalls, steht aber in der Prozessliste und in der
+Shell-History — nicht verwenden.
+
 Prüfen:
 
 ```bash
 linuxmuster-fileserver-verwaltung status
-linuxmuster-fileserver-verwaltung show
+linuxmuster-fileserver-verwaltung show                    # Freigabe, Share-Rechte, POSIX der Wurzel
+linuxmuster-fileserver-verwaltung show -u global-admin    # zusätzlich die NT-ACL der Wurzel
 ```
+
+`show` ohne `-u` meldet die NT-ACL nur als „gesetzt": Lesen kann sie auf einem
+Mitgliedsserver nur `smbcacls` über `smbd` (`samba-tool ntacl` würde eine aus
+den POSIX-Bits errechnete ACL zeigen, die plausibel aussieht und falsch ist),
+und dafür braucht es ein Domänenkonto — `-u <admin>` fragt das Passwort ab, in
+Skripten `-u <admin> -P <datei>`.
 
 ---
 
@@ -272,7 +294,13 @@ werden zu AD-Gruppen.**
 # auf dem linuxmuster-Server
 sophomorix-group --create --group verwaltung
 sophomorix-group --addmembers sekretariat1,schulleitung --group verwaltung
+samba-tool group listmembers verwaltung          # prüfen: muss die Mitglieder auflisten
 ```
+
+> `sophomorix-group --info --group verwaltung` zeigt in seiner Tabelle
+> `Members: 0`, obwohl `--addmembers` funktioniert hat — eine Anzeigeeigenheit
+> von sophomorix 7.3, das `member`-Attribut im AD ist gesetzt. Die Gruppe ist
+> also nicht leer; verlass dich auf `samba-tool group listmembers`.
 
 Eine mit `sophomorix-group` angelegte Gruppe trägt die `sophomorix*`-Attribute
 und ist für sophomorix damit ein *eigenes* Objekt — kein Fremdkörper. Das ist
@@ -306,7 +334,7 @@ und `status` vergleicht sie bei jedem Lauf:
 
 ```bash
 linuxmuster-fileserver-verwaltung status        # Exit-Code 1 bei Abweichung
-linuxmuster-fileserver-verwaltung repair-acls   # Basis-ACL neu setzen
+linuxmuster-fileserver-verwaltung repair-acls   # Basis-ACL neu setzen (fragt das Passwort ab; in Skripten -u <admin> -P <datei>)
 ```
 
 `status` eignet sich damit direkt als Cron-Job:
@@ -354,10 +382,63 @@ An einem Windows-Client als Mitglied der Domänen-Admins:
 2. **System → Freigegebene Ordner → Freigaben** → `Verwaltung` → Eigenschaften
 3. Reiter **Sicherheit → Erweitert**
 4. Vererbung deaktivieren → in explizite Berechtigungen konvertieren
-5. Einträge setzen, jeweils „Diesen Ordner, Unterordner und Dateien"
+5. Einträge setzen, jeweils „Diesen Ordner, Unterordner und Dateien"; Konten
+   und Gruppen als `LINUXMUSTER\<name>` (siehe 2.1)
+6. Enthält der Ordner schon Dateien: Häkchen „Alle Berechtigungseinträge für
+   untergeordnete Objekte durch vererbbare Berechtigungseinträge von diesem
+   Objekt ersetzen" — sonst behalten vorhandene Dateien ihre alten Einträge
+   (Details in der ANLEITUNG, 9.4)
 
 Danach legst du im Explorer die Ordner an und vergibst pro Ordner die Rechte —
 ganz normal wie auf einem Windows-Fileserver. Neue Ordner erben automatisch.
+
+### Ohne Windows-Client: `smbcacls`
+
+Dieselben Schritte gehen vom Fileserver aus über SMB — nicht lokal, denn
+`samba-tool ntacl` liest auf einem Mitgliedsserver nicht die gespeicherte ACL,
+sondern errechnet eine aus den POSIX-Bits. Zugangsdaten eines Domänen-Admins in
+einer Datei mit `0600` (Zeilen `username=`, `password=`, `domain=`), Konten
+immer als `LINUXMUSTER\<name>`, Pfade relativ zur Freigabe:
+
+```bash
+cd /srv/samba/verwaltung
+smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred            # anzeigen
+smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred -I copy    # Vererbung aus, Einträge werden explizit
+smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred \
+    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/OI|CI/CHANGE'         # Gruppe vom Ordner entfernen
+# „untergeordnete Objekte ersetzen": die Gruppe aus allem darunter entfernen
+find Schulleitung -mindepth 1 -type f -exec smbcacls //localhost/Verwaltung {} -A /root/.cred \
+    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/0x0/CHANGE' \;
+find Schulleitung -mindepth 1 -type d -exec smbcacls //localhost/Verwaltung {} -A /root/.cred \
+    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/OI|CI/CHANGE' \;
+# Gegenprobe: erwartet keine Ausgabe
+find Schulleitung | while read -r o; do
+    smbcacls //localhost/Verwaltung "$o" -A /root/.cred | grep -q '\\verwaltung:' && echo "noch drin: $o"
+done
+smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred --propagate-inheritance \
+    --add 'ACL:LINUXMUSTER\schulleitung:ALLOWED/OI|CI/CHANGE'          # berechtigte Gruppe hinzufügen, vererbt nach unten
+```
+
+Die `find`-Schleife ist für diesen Zweck das Gegenstück zum Häkchen (das
+Häkchen ersetzt *alle* Einträge der Kinder durch geerbte, die Schleife nimmt
+nur die eine Gruppe heraus und lässt andere Einzelrechte stehen). `smbcacls
+--propagate-inheritance --delete` genügt dafür **nicht**: Es entfernt unterhalb
+des Ordners nur Einträge, die als vererbt markiert sind (`I` in der Anzeige).
+Alles, was `setup` und die Benutzer über SMB unterhalb der Start-ACL anlegen,
+trägt die Einträge ohne diese Markierung (Dateien `0x0`, Ordner `OI|CI`), und
+die lässt der Befehl stehen — die alte Datei bliebe für die Gruppe lesbar und,
+weil der Eintrag Ändern-Recht trägt, auch beschreibbar und löschbar (am
+Testsystem nachgestellt).
+
+Die Gegenprobe ist Pflicht: `--delete` löscht nur bei exakter Übereinstimmung
+von Flags und Maske. Ein Eintrag mit `FULL` statt `CHANGE`, mit `I`-Flag oder
+`OI|CI|I` bleibt stehen und erzeugt dieselbe Meldung `ACL for ACE … not found`
+wie ein Objekt, das den Eintrag nie hatte. Die Meldungen sind also nur harmlos,
+solange die Gegenprobe leer bleibt; meldet sie `noch drin:`, den Eintrag so in
+`--delete` angeben, wie `smbcacls <objekt>` ihn zeigt (z. B. `…/I/CHANGE`,
+`…/OI|CI|I/CHANGE` oder `…/0x0/FULL`), und die Gegenprobe wiederholen.
+`--propagate-inheritance --add` dagegen tut, was es soll: Der neue Eintrag
+landet als vererbt auf allen Objekten darunter.
 
 ### `SeDiskOperatorPrivilege`
 
@@ -468,10 +549,15 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 | Benutzer sieht Ordner nicht | `hide unreadable = yes` — gewollt: keine ACL, kein Ordner |
 | Alle ausgesperrt, Gruppe existiert aber | Gruppe wurde gelöscht und neu angelegt → neue SID (siehe 5.) |
 | Zugriff bricht plötzlich weg, `net ads testjoin` schlägt fehl | Rechnerkonto vom `linuxmuster-import-devices` entfernt, weil der Server nicht in der `devices.csv` steht (siehe 4.1) |
+| `id huber` / `getent passwd huber` findet niemanden | Domänenkonten heißen hier `LINUXMUSTER\huber` (siehe 2.1): `getent passwd 'LINUXMUSTER\huber'`. Gewollt, kein `winbind use default domain` |
+| `log.winbindd` voller `Could not convert sids: NT_STATUS_INVALID_SID`, `log.wb-LINUXMUSTER` meldet `Unable to open tdb '/var/lib/samba/private/secrets.ldb'` | harmloses Rauschen (Log-Level 1) bei jedem SMB-Zugriff auf einem Mitgliedsserver mit Samba 4.19: Token-SIDs wie `S-1-18-1` lassen sich nicht auf Unix-IDs abbilden, und `secrets.ldb` gibt es nur auf einem DC. Kein Handlungsbedarf |
+| `sophomorix-group --info` zeigt `Members: 0` | Anzeigeeigenheit; `samba-tool group listmembers <gruppe>` zeigt die Wahrheit (siehe 5.) |
+| Eine alte Datei bleibt lesbar (und beschreibbar), obwohl die Gruppe vom Ordner entfernt wurde | Rechte nur am Ordner geändert; „untergeordnete Objekte ersetzen" (Windows) bzw. die `find`-Schleife samt Gegenprobe aus 6. fehlte — `smbcacls --propagate-inheritance --delete` allein lässt die Einträge stehen, und `--delete` ohne exakt passende Flags/Maske ebenfalls |
 
 ```bash
 linuxmuster-fileserver-verwaltung status       # Dienste, Join, DC, Freigabe, Gruppen-SIDs
-linuxmuster-fileserver-verwaltung show         # Freigabe, Share-Rechte, NT-ACL
+linuxmuster-fileserver-verwaltung show         # Freigabe, Share-Rechte, POSIX der Wurzel
+linuxmuster-fileserver-verwaltung show -u global-admin   # dazu die NT-ACL der Wurzel (Passwort; in Skripten -P <datei>)
 linuxmuster-fileserver-verwaltung repair-acls  # Basis-ACL nach Gruppenwechsel
 wbinfo --ping-dc
 net ads testjoin

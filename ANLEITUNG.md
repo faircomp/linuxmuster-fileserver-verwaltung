@@ -133,10 +133,15 @@ Beides wirkt nur auf neu geschriebene Daten — vor dem Befüllen setzen.
 ```bash
 sophomorix-group --create --group verwaltung
 sophomorix-group --addmembers sekretariat1,huber,schulleitung --group verwaltung
-sophomorix-group --info --group verwaltung        # prüfen
+samba-tool group listmembers verwaltung           # prüfen: listet die Mitglieder
 ```
 
 Die Mitglieder sind vorhandene Konten — auch Lehrerkonten sind in Ordnung.
+
+> `sophomorix-group --info --group verwaltung` zeigt in seiner Tabelle
+> `Members: 0`, obwohl `--addmembers` funktioniert hat — eine Anzeigeeigenheit
+> von sophomorix 7.3, das `member`-Attribut im AD ist gesetzt. Die Gruppe ist
+> also **nicht** leer; verlass dich auf `samba-tool group listmembers`.
 
 > **Nicht** die WebUI unter *Kurs → Neue Gruppen* verwenden. Was dort entsteht,
 > sind sophomorix-Sessions ohne AD-Objekt; die kannst du in Windows-ACLs nicht
@@ -220,16 +225,19 @@ Release-Seite laden. Am einfachsten auf deinem Arbeitsrechner, dann per `scp`
 auf den Server:
 
 ```bash
-# auf dem Arbeitsrechner
-gh release download v7.3.0 -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'
-scp linuxmuster-fileserver-verwaltung_7.3.0_all.deb root@10.0.0.3:/root/
+# auf dem Arbeitsrechner (ohne Tag holt gh das neueste Release)
+gh release download -R faircomp/linuxmuster-fileserver-verwaltung -p '*.deb'
+scp linuxmuster-fileserver-verwaltung_*_all.deb root@10.0.0.3:/root/
 
 # auf dem Fileserver
-apt install /root/linuxmuster-fileserver-verwaltung_7.3.0_all.deb
+apt install /root/linuxmuster-fileserver-verwaltung_*_all.deb
 ```
 
-Bei der Kerberos-Abfrage des Installers **den Realm leer lassen** — `setup`
-schreibt die `krb5.conf` gleich selbst.
+Der Installer fragt in der Regel **nicht** nach dem Kerberos-Realm:
+`krb5-config` leitet ihn aus der DNS-Domäne ab (deshalb Schritt 2 vor
+Schritt 6) und schreibt `/etc/krb5.conf` ohne Rückfrage. Erscheint die Abfrage
+doch, Vorgabe übernehmen oder leer lassen — `setup` schreibt die `krb5.conf`
+gleich selbst, das Original bleibt als `/etc/krb5.conf.lmn-orig` liegen.
 
 ## Schritt 7 — Setup ausführen
 
@@ -245,8 +253,12 @@ linuxmuster-fileserver-verwaltung setup \
     --folder Personal
 ```
 
-Das Passwort wird abgefragt. Die Ausgabe hakt jeden Schritt ab; beim ersten
-Fehler bricht es mit einer Erklärung ab, statt halb fertig weiterzulaufen.
+Das Passwort wird abgefragt. In Skripten stattdessen `-P /root/.pw` mitgeben
+(Datei mit dem Passwort, Rechte `0600`; gilt genauso für `show` und
+`repair-acls`) — ohne Terminal bricht `setup` sonst mit genau diesem Hinweis
+ab. `-p <passwort>` gibt es auch, landet aber in Prozessliste und
+Shell-History. Die Ausgabe hakt jeden Schritt ab; beim ersten Fehler bricht es
+mit einer Erklärung ab, statt halb fertig weiterzulaufen.
 
 Was passiert: Vorabprüfungen (Argumente, Hostname, DNS, Zeit) →
 Konfigurationsdateien schreiben → **dann** DC-Suche (sie braucht den Realm aus
@@ -260,15 +272,21 @@ Konfiguration mit den Gruppen-SIDs sichern.
 
 ```bash
 linuxmuster-fileserver-verwaltung status
-linuxmuster-fileserver-verwaltung show
+linuxmuster-fileserver-verwaltung show                    # Freigabe, Share-Rechte, POSIX der Wurzel
+linuxmuster-fileserver-verwaltung show -u global-admin    # zusätzlich die NT-ACL der Wurzel
 ```
 
-`status` muss überall grün sein und mit Exit-Code 0 enden. Zusätzlich von Hand:
+`status` muss überall grün sein und mit Exit-Code 0 enden. `show` ohne `-u`
+meldet die NT-ACL nur als „gesetzt": Auf einem Mitgliedsserver liest sie nur
+`smbcacls` über `smbd` zuverlässig, und dafür braucht es ein Domänenkonto —
+`-u` fragt das Passwort ab, in Skripten `-u global-admin -P /root/.pw`.
+Zusätzlich von Hand:
 
 ```bash
 net ads testjoin                              # "Join is OK"
 wbinfo --ping-dc
 wbinfo --name-to-sid 'LINUXMUSTER\verwaltung'
+getent group 'LINUXMUSTER\verwaltung'         # Domänenkonten immer mit Präfix (siehe 9.3)
 smbclient -L localhost -U global-admin        # Freigabe muss auftauchen
 ```
 
@@ -297,6 +315,12 @@ stimmen doch, warum kann ich nicht schreiben"-Fälle, weil die Freigabeebene
 stumm deckelt. Regle **alles** im Sicherheitsreiter.
 
 ### 9.3 Rechte auf der Wurzel setzen
+
+Konten und Gruppen heißen überall `LINUXMUSTER\<name>` — NetBIOS-Domäne,
+Backslash, Name. Genau so zeigt `show -u` sie an, und genau so löst der
+Fileserver sie auf: `getent group 'LINUXMUSTER\verwaltung'` findet die Gruppe,
+`getent group verwaltung` nicht (gewollt, siehe README 2.1). Beim Eintragen im
+Windows-Dialog also `LINUXMUSTER\verwaltung` schreiben.
 
 Reiter **Sicherheit → Erweitert**:
 
@@ -330,12 +354,26 @@ Verwaltung\
 └── Austausch\        alle aus "verwaltung": Ändern
 ```
 
-Für einen Ordner, der enger sein soll als die Wurzel:
+Für einen Ordner, der enger sein soll als die Wurzel (Beispiel `Schulleitung`):
 
 1. Rechtsklick → Eigenschaften → Sicherheit → Erweitert
 2. **Vererbung deaktivieren** → *In explizite Berechtigungen konvertieren*
-3. Die Gruppe entfernen, die nicht hinein soll
-4. Die berechtigte Gruppe hinzufügen
+3. Die Gruppe entfernen, die nicht hinein soll: `LINUXMUSTER\verwaltung`
+4. Die berechtigte Gruppe hinzufügen, z. B. `LINUXMUSTER\schulleitung`,
+   „Diesen Ordner, Unterordner und Dateien", Ändern
+5. **Enthält der Ordner schon Dateien oder Unterordner:** Häkchen „Alle
+   Berechtigungseinträge für untergeordnete Objekte durch vererbbare
+   Berechtigungseinträge von diesem Objekt ersetzen" setzen → OK
+
+> Schritt 5 ist keine Kosmetik. Ohne das Häkchen können vorhandene Dateien
+> ihre alten, ursprünglich geerbten Einträge behalten: Der Ordner verschwindet
+> zwar aus der Ansicht der entfernten Gruppe, und neue Dateien lassen sich dort
+> nicht anlegen — eine schon vorhandene Datei bleibt über ihren Pfad aber
+> weiterhin lesbar und, weil ihr Eintrag Ändern-Recht trägt, auch beschreibbar
+> und löschbar. Im Test nachgestellt: Ein Lehrer aus `verwaltung` konnte
+> eine vorher angelegte Datei in `Schulleitung` nach dem Entfernen der Gruppe
+> noch lesen, bis die Einträge der untergeordneten Objekte ersetzt wurden. Bei
+> einem noch leeren Ordner ist der Schritt entbehrlich.
 
 > Nutze **Verweigern**-Einträge nur, wenn es nicht anders geht. Sie gewinnen
 > immer und machen Rechtestrukturen schwer nachvollziehbar. Meist ist
@@ -343,6 +381,12 @@ Für einen Ordner, der enger sein soll als die Wurzel:
 
 Weil die Freigabe mit `hide unreadable = yes` läuft, sehen Benutzer nur die
 Ordner, auf die sie tatsächlich Rechte haben. Das ist gewollt.
+
+Ohne Windows-Client gehen dieselben Schritte vom Fileserver aus mit `smbcacls`
+(Vererbung aus mit `-I copy`, Gruppe vom Ordner entfernen mit `--delete`,
+untergeordnete Objekte ersetzen mit einer `find`-Schleife über alles darunter,
+danach die Gegenprobe, die kein Objekt mehr mit der Gruppe finden darf); die am
+Testsystem geprüften Befehle stehen in README 6.
 
 ### 9.5 Delegation an eine eigene Admin-Gruppe (optional)
 
@@ -436,6 +480,10 @@ Ordnerrechte zerstören, die du in Schritt 9.4 vergeben hast.
 | Rechte nach Restore weg | Backup ohne `-X` (xattrs) |
 | Alle ausgesperrt, Gruppe existiert | Gruppe neu angelegt → neue SID → `repair-acls` |
 | Benutzer sieht Ordner nicht | Kein Recht → `hide unreadable` blendet aus. Gewollt. |
+| `id huber` / `getent passwd huber` findet nichts | Domänenkonten heißen `LINUXMUSTER\huber` — Präfix nötig, gewollt (9.3) |
+| Alte Datei bleibt lesbar (und beschreibbar), obwohl die Gruppe vom Ordner entfernt ist | „Untergeordnete Objekte ersetzen" fehlte (9.4, Schritt 5); ohne Windows: `find`-Schleife samt Gegenprobe (README 6) |
+| `sophomorix-group --info` zeigt `Members: 0` | Anzeigeeigenheit; `samba-tool group listmembers verwaltung` zeigt die Wahrheit (Schritt 4) |
+| `log.winbindd` voller `NT_STATUS_INVALID_SID`, `log.wb-LINUXMUSTER` vermisst `secrets.ldb` | Harmloses Rauschen auf Mitgliedsservern, kein Handlungsbedarf (README 9) |
 
 Wenn du dich komplett aussperrst, kommt root lokal wieder heran:
 
@@ -448,13 +496,18 @@ Danach greift der Fallback und du kannst die Rechte neu setzen.
 ## Server wieder abbauen
 
 ```bash
-net ads leave -U administrator          # auf dem Fileserver
+net ads leave -U global-admin           # auf dem Fileserver; jedes Konto aus den Domänen-Admins genügt
 ```
 
 Das entfernt das Rechnerkonto, **nicht** aber den DNS-Eintrag. Den musst du
-auf dem linuxmuster-Server separat löschen, sonst zeigt der Name weiter auf
-eine IP, die es nicht mehr gibt:
+separat löschen, sonst zeigt der Name weiter auf eine IP, die es nicht mehr
+gibt — auf dem linuxmuster-Server oder vom Fileserver aus (dann mit dem DC
+statt `localhost`):
 
 ```bash
-samba-tool dns delete localhost <domain> verwaltung01 A <ip> -U administrator
+samba-tool dns delete localhost linuxmuster.lan verwaltung01 A 10.0.0.3 -U global-admin                # auf dem linuxmuster-Server
+samba-tool dns delete server.linuxmuster.lan linuxmuster.lan verwaltung01 A 10.0.0.3 -U global-admin   # oder vom Fileserver aus
 ```
+
+Danach meldet `status` auf dem Fileserver `Domaenenmitgliedschaft ... FEHLER`
+mit Exit-Code 1 — dasselbe Signal, auf das der Cron-Job aus Schritt 10 baut.
