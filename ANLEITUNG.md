@@ -382,9 +382,9 @@ Weil die Freigabe mit `hide unreadable = yes` läuft, sehen Benutzer nur die
 Ordner, auf die sie tatsächlich Rechte haben. Das ist gewollt.
 
 Ohne Windows-Client gehen dieselben Schritte vom Fileserver aus mit `smbcacls`
-(Vererbung aus mit `-I copy`, Gruppe entfernen und untergeordnete Objekte
-ersetzen mit `--propagate-inheritance --delete …`); die Befehle stehen in
-README 6.
+(Vererbung aus mit `-I copy`, Gruppe vom Ordner entfernen mit `--delete`,
+untergeordnete Objekte ersetzen mit einer `find`-Schleife über alles darunter);
+die am Testsystem geprüften Befehle stehen in README 6.
 
 ### 9.5 Delegation an eine eigene Admin-Gruppe (optional)
 

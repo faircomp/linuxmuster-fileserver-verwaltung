@@ -398,21 +398,34 @@ Dieselben Schritte gehen vom Fileserver aus über SMB — nicht lokal, denn
 `samba-tool ntacl` liest auf einem Mitgliedsserver nicht die gespeicherte ACL,
 sondern errechnet eine aus den POSIX-Bits. Zugangsdaten eines Domänen-Admins in
 einer Datei mit `0600` (Zeilen `username=`, `password=`, `domain=`), Konten
-immer als `LINUXMUSTER\<name>`:
+immer als `LINUXMUSTER\<name>`, Pfade relativ zur Freigabe:
 
 ```bash
+cd /srv/samba/verwaltung
 smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred            # anzeigen
 smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred -I copy    # Vererbung aus, Einträge werden explizit
-smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred --propagate-inheritance \
-    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/OI|CI/CHANGE'         # Gruppe entfernen, auch aus vorhandenen Dateien
+smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred \
+    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/OI|CI/CHANGE'         # Gruppe vom Ordner entfernen
+# „untergeordnete Objekte ersetzen": die Gruppe aus allem darunter entfernen
+find Schulleitung -mindepth 1 -type f -exec smbcacls //localhost/Verwaltung {} -A /root/.cred \
+    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/0x0/CHANGE' \;
+find Schulleitung -mindepth 1 -type d -exec smbcacls //localhost/Verwaltung {} -A /root/.cred \
+    --delete 'ACL:LINUXMUSTER\verwaltung:ALLOWED/OI|CI/CHANGE' \;
 smbcacls //localhost/Verwaltung Schulleitung -A /root/.cred --propagate-inheritance \
     --add 'ACL:LINUXMUSTER\schulleitung:ALLOWED/OI|CI/CHANGE'          # berechtigte Gruppe hinzufügen, vererbt nach unten
 ```
 
-`--propagate-inheritance` ist das Gegenstück zum Häkchen „untergeordnete
-Objekte ersetzen": Ohne die Option ändert `smbcacls` nur den Ordner selbst, und
-schon vorhandene Dateien behalten ihre alten Einträge. `-I copy` lässt sich
-nicht mit `--propagate-inheritance` kombinieren, deshalb der eigene Aufruf.
+Die `find`-Schleife ist das Gegenstück zum Häkchen. `smbcacls
+--propagate-inheritance --delete` genügt dafür **nicht**: Es entfernt unterhalb
+des Ordners nur Einträge, die als vererbt markiert sind (`I` in der Anzeige).
+Alles, was `setup` und die Benutzer über SMB unterhalb der Start-ACL anlegen,
+trägt die Einträge ohne diese Markierung (Dateien `0x0`, Ordner `OI|CI`), und
+die lässt der Befehl stehen — die alte Datei bliebe für die Gruppe lesbar (am
+Testsystem nachgestellt). Zeigt `smbcacls <objekt>` den Eintrag mit `I`,
+lautet er im `--delete` entsprechend `…/I/CHANGE` bzw. `…/OI|CI|I/CHANGE`.
+Meldungen `ACL for ACE … not found` für Objekte ohne den Eintrag sind harmlos.
+`--propagate-inheritance --add` dagegen tut, was es soll: Der neue Eintrag
+landet als vererbt auf allen Objekten darunter.
 
 ### `SeDiskOperatorPrivilege`
 
@@ -526,7 +539,7 @@ setfattr -x security.NTACL /srv/samba/verwaltung
 | `id huber` / `getent passwd huber` findet niemanden | Domänenkonten heißen hier `LINUXMUSTER\huber` (siehe 2.1): `getent passwd 'LINUXMUSTER\huber'`. Gewollt, kein `winbind use default domain` |
 | `log.winbindd` voller `Could not convert sids: NT_STATUS_INVALID_SID`, `log.wb-LINUXMUSTER` meldet `Unable to open tdb '/var/lib/samba/private/secrets.ldb'` | harmloses Rauschen (Log-Level 1) bei jedem SMB-Zugriff auf einem Mitgliedsserver mit Samba 4.19: Token-SIDs wie `S-1-18-1` lassen sich nicht auf Unix-IDs abbilden, und `secrets.ldb` gibt es nur auf einem DC. Kein Handlungsbedarf |
 | `sophomorix-group --info` zeigt `Members: 0` | Anzeigeeigenheit; `samba-tool group listmembers <gruppe>` zeigt die Wahrheit (siehe 5.) |
-| Eine alte Datei bleibt lesbar, obwohl die Gruppe vom Ordner entfernt wurde | Rechte nur am Ordner geändert; „untergeordnete Objekte ersetzen" bzw. `smbcacls --propagate-inheritance` fehlte (siehe 6.) |
+| Eine alte Datei bleibt lesbar, obwohl die Gruppe vom Ordner entfernt wurde | Rechte nur am Ordner geändert; „untergeordnete Objekte ersetzen" (Windows) bzw. die `find`-Schleife aus 6. fehlte — `smbcacls --propagate-inheritance --delete` allein lässt die Einträge stehen |
 
 ```bash
 linuxmuster-fileserver-verwaltung status       # Dienste, Join, DC, Freigabe, Gruppen-SIDs

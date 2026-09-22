@@ -25,8 +25,10 @@ linuxmuster-fileserver-verwaltung (7.3.2) lmn73; urgency=medium
   * ANLEITUNG 9.4: tightening a folder that already contains files needs
     "replace all child object permission entries" - without it a file
     created earlier stays readable for the removed group. README 6 gains
-    the equivalent smbcacls commands (--propagate-inheritance) for servers
-    managed without a Windows client.
+    the equivalent smbcacls commands for servers managed without a Windows
+    client: a per-object loop, because "smbcacls --propagate-inheritance
+    --delete" leaves the unflagged entries below the start ACL in place
+    (verified in the lab).
   * ANLEITUNG step 4 and README 5 check the group with "samba-tool group
     listmembers": "sophomorix-group --info" shows "Members: 0" although the
     members are set (display quirk).
