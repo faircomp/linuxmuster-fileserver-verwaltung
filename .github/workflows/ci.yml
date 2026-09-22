@@ -224,6 +224,9 @@ jobs:
           CONF
           sudo chmod 0644 /etc/linuxmuster-fileserver-verwaltung/share.conf
 
+          # Every python below runs with -P: this job checks the repository out, so
+          # without it the working directory lands on sys.path and the module under
+          # /usr/bin could pull its imports from the SOURCE tree instead of the system.
           # The package's own loader must understand the file -- before and after. A
           # format change that breaks existing installs is the failure this catches;
           # comparing the parse result is stricter than comparing the bytes alone.
@@ -252,7 +255,7 @@ jobs:
           # An empty manifest would pass `sha256sum -c` while proving nothing.
           test -s before.sha256
           sudo stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > before.perms
-          python3 parse-share-conf.py > before.parsed
+          python3 -P parse-share-conf.py > before.parsed
           cat before.sha256 before.perms before.parsed
 
           # ---------------------------------------------------------------- the upgrade
@@ -276,7 +279,7 @@ jobs:
           sudo sha256sum -c before.sha256
           sudo stat -c '%a %U:%G %n' /etc/linuxmuster-fileserver-verwaltung/share.conf > after.perms
           diff -u before.perms after.perms
-          python3 parse-share-conf.py > after.parsed
+          python3 -P parse-share-conf.py > after.parsed
           diff -u before.parsed after.parsed
 
           # The installed version IS the built one, and every shipped file on disk comes
@@ -310,7 +313,7 @@ jobs:
           test "$(command -v linuxmuster-fileserver-verwaltung)" = /usr/bin/linuxmuster-fileserver-verwaltung
           linuxmuster-fileserver-verwaltung --help >/dev/null
           linuxmuster-fileserver-verwaltung setup --help >/dev/null
-          python3 - <<'PY'
+          python3 -P - <<'PY'
           import importlib.util
           from importlib.machinery import SourceFileLoader
 
