@@ -1,3 +1,21 @@
+linuxmuster-fileserver-verwaltung (7.3.4) lmn73; urgency=medium
+
+  * Build and release hardening only, no behaviour change: the CLI, the three .example
+    templates and share.conf handling are the same as in 7.3.3. Nothing has to be re-run on
+    the fileserver.
+  * The package is built from pinned inputs. The build container
+    ghcr.io/linuxmuster/lmndev-runner:24.04 is pulled by its sha256 digest instead of a tag
+    that upstream rebuilds every week, and every GitHub Action used by CI and the release is
+    pinned to a commit instead of a movable tag. A new container or action version now
+    arrives as a reviewable pull request (Renovate, never merged automatically) instead of
+    silently changing what goes into the package.
+  * The GitHub release no longer uses a third-party action. It is created as a draft, the
+    .deb and .changes are uploaded and compared by sha256 with the build, and
+    only then is the release published, so it can be made immutable: once published, its
+    tag and files cannot be changed anymore.
+
+ -- Kevin Stenzel <mail@kevin-stenzel.de>  Wed, 23 Sep 2026 13:21:42 +0200
+
 linuxmuster-fileserver-verwaltung (7.3.3) lmn73; urgency=medium
 
   * CI gains the upgrade-smoke job: every push and every release now installs
