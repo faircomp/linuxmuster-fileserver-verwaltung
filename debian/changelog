@@ -10,9 +10,11 @@ linuxmuster-fileserver-verwaltung (7.3.4) lmn73; urgency=medium
     arrives as a reviewable pull request (Renovate, never merged automatically) instead of
     silently changing what goes into the package.
   * The GitHub release no longer uses a third-party action. It is created as a draft, the
-    .deb and .changes are uploaded and compared by sha256 with the build, and
-    only then is the release published, so it can be made immutable: once published, its
-    tag and files cannot be changed anymore.
+    .changes and every file it lists are uploaded and compared by sha256 with the build,
+    and only then is the release published, so it can be made immutable: once published,
+    its tag and files cannot be changed anymore. New among the files: the .dsc, the source
+    tarball and the .buildinfo, which the .changes always named but the release did not
+    carry. README §10 names the pinned build image and the release files.
 
  -- Kevin Stenzel <mail@kevin-stenzel.de>  Wed, 23 Sep 2026 13:21:42 +0200
 
