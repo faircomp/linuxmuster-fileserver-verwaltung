@@ -574,8 +574,16 @@ make deb          # dpkg-buildpackage -us -uc -tc; legt das .deb eine Ebene übe
 ```
 
 Die CI baut im Container `ghcr.io/linuxmuster/lmndev-runner:24.04`, dem
-Bau-Image der offiziellen linuxmuster.net-Pakete; wer lokal keine
-Debian-Werkzeuge hat, baut genauso.
+Bau-Image der offiziellen linuxmuster.net-Pakete, festgelegt per Digest
+(`IMG_LMN73` in `.github/workflows/ci.yml`; neue Digests schlägt Renovate als
+Pull Request vor). Wer lokal keine Debian-Werkzeuge hat, baut mit genau diesem
+Image, nie mit dem bloßen Tag:
+
+```bash
+IMG=$(sed -n 's/^ *IMG_LMN73=//p' .github/workflows/ci.yml)
+docker run --rm -u root -v "$PWD":/src/pkg -v /tmp/out:/src -w /src/pkg "$IMG" \
+  bash -c 'apt-get update -qq && apt-get build-dep -y -qq . && make deb'
+```
 
 Bei jedem Push und Pull Request (`ci.yml`) werden die CLI kompiliert und mit
 ruff geprüft, das Paket im Container gebaut und auf `ubuntu-24.04` installiert
@@ -583,7 +591,9 @@ ruff geprüft, das Paket im Container gebaut und auf `ubuntu-24.04` installiert
 gerenderte `smb.conf` mit `testparm` prüfen). Ein Tag `v<Version>`
 (`release.yml`) prüft zusätzlich, dass der Tag der Version in
 `debian/changelog` entspricht, und erstellt nach demselben Bau und Smoke-Test
-das GitHub-Release mit `.deb` und `.changes`.
+das GitHub-Release: zuerst als Entwurf, dann mit der `.changes` und allen
+darin genannten Dateien (`.deb`, `.dsc`, Quell-Tarball, `.buildinfo`), deren
+SHA256 mit dem Bau verglichen wird, und erst danach veröffentlicht.
 
 ---
 
