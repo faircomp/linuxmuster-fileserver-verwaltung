@@ -78,7 +78,8 @@ jobs:
         run: |
           apt-get update -qq && apt-get build-dep -y -qq . 2>/dev/null || true
           make deb
-          mkdir -p output && mv ../*.deb ../*.changes ../*.buildinfo output/
+          # The .changes lists the source package too; the release publishes every file it names.
+          mkdir -p output && mv ../*.deb ../*.changes ../*.buildinfo ../*.dsc ../*.tar.* output/
       - name: Lintian (errors fail the build, warnings are advisory)
         run: lintian --fail-on error output/*.deb
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

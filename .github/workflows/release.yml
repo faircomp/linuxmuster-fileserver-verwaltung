@@ -56,7 +56,8 @@ jobs:
       - run: |
           apt-get update -qq && apt-get build-dep -y -qq . 2>/dev/null || true
           make deb
-          mkdir -p output && mv ../*.deb ../*.changes ../*.buildinfo output/
+          # The .changes lists the source package too; the release publishes every file it names.
+          mkdir -p output && mv ../*.deb ../*.changes ../*.buildinfo ../*.dsc ../*.tar.* output/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: packages
@@ -350,10 +351,16 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          assets=(packages/*.deb packages/*.changes)
-          for kind in deb changes; do
-            compgen -G "packages/*.$kind" > /dev/null || { echo "::error::no *.$kind to publish"; exit 1; }
+          # Publish the .changes and exactly the files it lists (Files: " md5 size section priority
+          # name"), so the .changes never names a file nobody can download.
+          changes=(packages/*.changes)
+          [ "${#changes[@]}" = 1 ] || { echo "::error::expected one .changes, found ${#changes[@]}"; exit 1; }
+          mapfile -t listed < <(awk '/^Files:/ {f = 1; next} f && /^ / {print "packages/" $5; next} f {exit}' "${changes[0]}")
+          assets=("${changes[0]}" "${listed[@]}")
+          for f in "${assets[@]}"; do
+            [ -f "$f" ] || { echo "::error::$f is listed in the .changes but was not built"; exit 1; }
           done
+          printf '%s\n' "${listed[@]}" | grep -q '\.deb$' || { echo "::error::the .changes lists no .deb"; exit 1; }
           pre=(); case "$TAG" in *-rc*) pre=(--prerelease) ;; esac
           lookup() { gh api "repos/$GH_REPO/releases?per_page=100" \
                        --jq '.[] | select(.tag_name == env.TAG) | "\(.id) \(.draft)"'; }
