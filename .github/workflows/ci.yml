@@ -76,7 +76,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build package (make deb wraps dpkg-buildpackage)
         run: |
-          apt-get update -qq && apt-get build-dep -y -qq . 2>/dev/null || true
+          apt-get update -qq
+          # Never `2>/dev/null || true`: a build dependency that cannot be installed must fail
+          # here, where the reason is in the log, not later or not at all.
+          apt-get build-dep -y -qq .
           make deb
           # The .changes lists the source package too; the release publishes every file it names.
           mkdir -p output && mv ../*.deb ../*.changes ../*.buildinfo ../*.dsc ../*.tar.* output/
