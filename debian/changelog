@@ -6,9 +6,9 @@ linuxmuster-fileserver-verwaltung (7.3.5) lmn73; urgency=medium
     once published, its tag and files cannot be changed anymore. 7.3.4 and every older
     release were published before immutable releases were switched on for the repository and
     can still be changed; install 7.3.5 instead.
-  * The release job refuses to publish unless immutable releases are switched on for the
-    repository (checked while the release is still a draft), and fails if the published
-    release does not come out immutable. Until now it only printed a warning and ended green.
+  * The release job fails if the published release does not come out immutable; until now it
+    only printed a warning and ended green. With a read-only token for the repository setting
+    it also refuses to publish while immutable releases are switched off.
   * A build dependency that cannot be installed now stops the build in CI and in the release
     at `apt-get build-dep`, with apt's reason in the log. Until now errors of `apt-get update`
     and `apt-get build-dep` were discarded and the build went on, to fail later, if at all.
