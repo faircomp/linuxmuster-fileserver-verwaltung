@@ -23,10 +23,10 @@ the DC and never a sophomorix-managed fileserver.
 
 - Version: the top entry of `debian/changelog` is the only hand-edited version (`7.3.N`, dist
   `lmn73`). Never bump it in a feature PR; Kevin bumps and tags `v7.3.N` (CI gate: tag ==
-  changelog version). `release.yml` publishes only if the release comes out immutable, which
-  it checks with the repo secret `IMMUTABLE_CHECK_TOKEN` (fine-grained, this repo,
-  Administration: Read-only; GITHUB_TOKEN cannot read that setting). Without the secret the
-  release stays a draft.
+  changelog version). `release.yml` fails unless the published release comes out immutable;
+  with the optional repo secret `IMMUTABLE_CHECK_TOKEN` (fine-grained, this repo,
+  Administration: Read-only; GITHUB_TOKEN cannot read that setting) it also refuses to
+  publish while the setting is off.
 - License: GPL-3.0-or-later (`LICENSE`, `debian/copyright`). No code from linuxmuster-fileserver
   (Netzint GmbH) is included; keep it that way when touching the config examples or packaging.
 - Design decisions that look odd but are deliberate (see README §2): `rid` idmap backend, not
