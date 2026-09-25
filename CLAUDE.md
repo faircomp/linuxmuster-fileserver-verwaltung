@@ -49,7 +49,7 @@ the DC and never a sophomorix-managed fileserver.
   (ruff 0.15.21, default rule set, snake_case, lines <= 100).
 - `make deb` builds the package (`.deb` lands one level up); CI builds in
   `ghcr.io/linuxmuster/lmndev-runner:24.04` pinned by digest (`IMG_LMN73` in
-  `.github/workflows/ci.yml`; Renovate proposes new digests as PRs) as root and installs the
+  `.github/workflows/ci.yml`; raised by hand while Renovate is disabled) as root and installs the
   result on ubuntu-24.04. A local container build uses the same digest, never the bare tag
   (`README.md` §10).
 - Lab test via the hub: `bin/lab-lock`, `bin/lab-snapshot`, `bin/lab-deploy <member-vm> <deb>`,
