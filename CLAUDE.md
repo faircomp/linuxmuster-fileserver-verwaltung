@@ -23,7 +23,10 @@ the DC and never a sophomorix-managed fileserver.
 
 - Version: the top entry of `debian/changelog` is the only hand-edited version (`7.3.N`, dist
   `lmn73`). Never bump it in a feature PR; Kevin bumps and tags `v7.3.N` (CI gate: tag ==
-  changelog version).
+  changelog version). `release.yml` fails unless the published release comes out immutable;
+  with the optional repo secret `IMMUTABLE_CHECK_TOKEN` (fine-grained, this repo,
+  Administration: Read-only; GITHUB_TOKEN cannot read that setting) it also refuses to
+  publish while the setting is off.
 - License: GPL-3.0-or-later (`LICENSE`, `debian/copyright`). No code from linuxmuster-fileserver
   (Netzint GmbH) is included; keep it that way when touching the config examples or packaging.
 - Design decisions that look odd but are deliberate (see README §2): `rid` idmap backend, not
@@ -46,7 +49,7 @@ the DC and never a sophomorix-managed fileserver.
   (ruff 0.15.21, default rule set, snake_case, lines <= 100).
 - `make deb` builds the package (`.deb` lands one level up); CI builds in
   `ghcr.io/linuxmuster/lmndev-runner:24.04` pinned by digest (`IMG_LMN73` in
-  `.github/workflows/ci.yml`; Renovate proposes new digests as PRs) as root and installs the
+  `.github/workflows/ci.yml`; raised by hand while Renovate is disabled) as root and installs the
   result on ubuntu-24.04. A local container build uses the same digest, never the bare tag
   (`README.md` §10).
 - Lab test via the hub: `bin/lab-lock`, `bin/lab-snapshot`, `bin/lab-deploy <member-vm> <deb>`,

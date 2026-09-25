@@ -1,3 +1,23 @@
+linuxmuster-fileserver-verwaltung (7.3.5) lmn73; urgency=medium
+
+  * Release only, no behaviour change: the CLI, the three .example templates and share.conf
+    handling are the same as in 7.3.4. Nothing has to be re-run on the fileserver.
+  * This release exists so that the version a school installs is an immutable GitHub release:
+    once published, its tag and files cannot be changed anymore. 7.3.4 and every older
+    release were published before immutable releases were switched on for the repository and
+    can still be changed; install 7.3.5 instead.
+  * The release job fails if the published release does not come out immutable; until now it
+    only printed a warning and ended green. With a read-only token for the repository setting
+    it also refuses to publish while immutable releases are switched off.
+  * A build dependency that cannot be installed now stops the build in CI and in the release
+    at `apt-get build-dep`, with apt's reason in the log. Until now errors of `apt-get update`
+    and `apt-get build-dep` were discarded and the build went on, to fail later, if at all.
+  * Correction to 7.3.4: Renovate is switched off for now, so new container and action
+    versions do not arrive as pull requests; the pins are raised by hand until Renovate
+    returns as a GitHub App.
+
+ -- Kevin Stenzel <mail@kevin-stenzel.de>  Fri, 25 Sep 2026 11:16:36 +0200
+
 linuxmuster-fileserver-verwaltung (7.3.4) lmn73; urgency=medium
 
   * Build and release hardening only, no behaviour change: the CLI, the three .example

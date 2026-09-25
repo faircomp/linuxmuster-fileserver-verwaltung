@@ -575,9 +575,9 @@ make deb          # dpkg-buildpackage -us -uc -tc; legt das .deb eine Ebene übe
 
 Die CI baut im Container `ghcr.io/linuxmuster/lmndev-runner:24.04`, dem
 Bau-Image der offiziellen linuxmuster.net-Pakete, festgelegt per Digest
-(`IMG_LMN73` in `.github/workflows/ci.yml`; neue Digests schlägt Renovate als
-Pull Request vor). Wer lokal keine Debian-Werkzeuge hat, baut mit genau diesem
-Image, nie mit dem bloßen Tag:
+(`IMG_LMN73` in `.github/workflows/ci.yml`; neue Digests werden von Hand
+nachgezogen, solange Renovate abgeschaltet ist). Wer lokal keine
+Debian-Werkzeuge hat, baut mit genau diesem Image, nie mit dem bloßen Tag:
 
 ```bash
 IMG=$(sed -n 's/^ *IMG_LMN73=//p' .github/workflows/ci.yml)
